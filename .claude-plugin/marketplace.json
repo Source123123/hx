@@ -1,0 +1,11 @@
+{
+  "name": "hx",
+  "owner": { "name": "Source123123" },
+  "plugins": [
+    {
+      "name": "hx",
+      "source": "./",
+      "description": "保存和载入项目的 Agent 环境，换机器或交接时不丢上下文。"
+    }
+  ]
+}

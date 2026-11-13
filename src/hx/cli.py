@@ -165,6 +165,141 @@ def cmd_import(args) -> int:
     return 1 if conflicts else 0
 
 
+def _save_report(r: dict, project: Path) -> None:
+    lock = r["lock"]
+    if r["first"]:
+        print("第一次保存：已创建 .harness/ 目录。")
+    if r["committed"]:
+        print(f"已保存（快照 {lock['snapshot']}，{len(lock['entries'])} 个文件）。")
+    elif r["reason"] == "no-git":
+        print(f"已保存到 .harness/（快照 {lock['snapshot']}）。这个目录不是 git 仓库，所以没有历史记录；"
+              "运行 git init 后再保存就有了。")
+    elif r["reason"] == "git-busy":
+        print("已更新 .harness/，但仓库正在合并或变基中，这次没有提交。")
+    else:
+        print(f"没有新的变化（快照 {lock['snapshot']}）。")
+    if r.get("redactions") and r["redactions"] != "未发现密钥":
+        print(f"已自动隐藏密钥：{r['redactions']}")
+    if r.get("uncommitted"):
+        print(f"提醒：这些文件还没有 git commit，别的机器拿不到最新内容：{', '.join(r['uncommitted'])}")
+    if r["pushed"]:
+        print("已推送到远端。")
+    elif r["committed"]:
+        print("要分享给别人：git push（或 hx save --push），对方 clone 后运行 hx load。")
+
+
+def cmd_save(args) -> int:
+    project = _project(args)
+    _save_report(core.save(project, args.message, push=args.push), project)
+    return 0
+
+
+def cmd_load(args) -> int:
+    project = _project(args)
+    if args.source:
+        project = core.fetch_source(args.source, project)
+        print(f"项目已就绪：{project}")
+    plan = [a for a in core.materialize(project, force=args.force, dry_run=True) if a.status != "same"]
+    todo = [a for a in plan if a.status == "written" or (a.status == "conflict" and args.force)]
+    if todo and not args.yes:
+        print("将把下面这些 Agent 配置放到本机（其中可能包含会自动执行命令的设置，请只载入你信任的项目）：")
+        for a in todo:
+            print(f"  {a.target}{'  （覆盖，原文件会备份）' if a.status == 'conflict' else ''}")
+        if args.dry_run:
+            return 0
+        if not sys.stdin.isatty():
+            raise HxError("需要确认。确认无误后请加 --yes 再运行一次。")
+        if input("继续吗？[y/N] ").strip().lower() not in ("y", "yes"):
+            print("已取消。")
+            return 1
+    elif args.dry_run:
+        print("没有需要放到本机的配置。")
+        return 0
+    actions = core.materialize(project, force=args.force)
+    n = {s: sum(a.status == s for a in actions) for s in ("written", "conflict")}
+    for a in actions:
+        if a.status == "conflict":
+            print(f"! {a.target}  本机已有不同的版本，没有改动")
+    print(f"已载入：放置了 {n['written']} 项配置" + (f"，{n['conflict']} 项因本机已有不同版本而跳过（hx load --force 可覆盖）" if n["conflict"] else "") + "。")
+    problems = [c for c in core.doctor(project) if c.level == "fail"]
+    notes = [c for c in core.doctor(project) if c.level == "warn" and "快照之后改过" not in c.title]
+    if problems or notes:
+        print("\n还需要你处理：")
+        for c in problems + notes:
+            print(f"  {ICON[c.level]} {c.title}" + (f"  → {c.hint}" if c.hint else ""))
+    else:
+        print("环境检查全部通过。")
+    print("\n交接简报：.harness/context/HANDOFF.md。重新打开 Agent 后新配置生效。")
+    return 1 if problems else 0
+
+
+def cmd_auto(args) -> int:
+    project = _project(args)
+    manifest = core.load_manifest(project)
+    if args.state:
+        manifest["auto_save"] = args.state == "on"
+        from .util import MANIFEST, write_json
+        write_json(core.harness_dir(project) / MANIFEST, manifest)
+    print(f"自动保存：{'开' if manifest.get('auto_save') else '关'}（需要安装 Claude Code 插件才会在会话结束时触发）")
+    return 0
+
+
+def _hook_project(args) -> Path:
+    import os
+    return Path(os.environ.get("CLAUDE_PROJECT_DIR") or args.project).resolve()
+
+
+def cmd_auto_save(args) -> int:
+    """给 Agent 的会话结束钩子用。只对已经用 hx 管理、且开着自动保存的项目生效；任何错误都不打断 Agent。"""
+    try:
+        project = _hook_project(args)
+        manifest = core.read_json(core.harness_dir(project) / "harness.json")
+        if isinstance(manifest, dict) and manifest.get("auto_save"):
+            r = core.save(project)
+            if r["committed"]:
+                print(f"hx：已自动保存 Agent 环境（快照 {r['lock']['snapshot']}）。")
+    except Exception as e:  # noqa: BLE001
+        print(f"hx 自动保存失败：{e}", file=sys.stderr)
+    return 0
+
+
+def cmd_auto_load(args) -> int:
+    """给 Agent 的会话开始钩子用。只报告，不往本机写任何东西。"""
+    try:
+        project = _hook_project(args)
+        if not (core.harness_dir(project) / "harness.json").is_file() or \
+                not (core.harness_dir(project) / "harness.lock.json").is_file():
+            return 0
+        pending = [a for a in core.materialize(project, dry_run=True) if a.status != "same"]
+        print("hx：这个项目带有交接简报 .harness/context/HANDOFF.md，接手工作前请先阅读。")
+        if pending:
+            print(f"hx：有 {len(pending)} 项 Agent 配置还没有载入本机。请告诉用户可以运行 /hx:load 来载入。")
+    except Exception as e:  # noqa: BLE001
+        print(f"hx 检查失败：{e}", file=sys.stderr)
+    return 0
+
+
+def cmd_home(args) -> int:
+    """不带任何参数运行 hx：说明当前状态和下一步。"""
+    project = _project(args)
+    if not (core.harness_dir(project) / "harness.json").is_file():
+        print("这个项目还没有用 hx 保存过 Agent 环境。\n")
+        print("  hx save          保存这个项目的 Agent 环境")
+        print("  hx load <来源>   载入别人分享的项目（.hxb 文件或 git 地址）")
+        return 0
+    rows = core.log(project) if gitutil.is_repo(project) else []
+    if rows:
+        print(f"最近一次保存：{rows[0]['date'][:16].replace('T', ' ')}　{rows[0]['subject']}（共 {len(rows)} 次）")
+    else:
+        print("已初始化，还没有保存记录。")
+    pending = [a for a in core.materialize(project, dry_run=True) if a.status != "same"] \
+        if (core.harness_dir(project) / "harness.lock.json").is_file() else []
+    if pending:
+        print(f"有 {len(pending)} 项配置还没有载入本机 → hx load")
+    print("\n  hx save   保存当前的 Agent 环境\n  hx load   把保存的环境载入本机\n  hx log    查看历史\n  hx -h     全部命令")
+    return 0
+
+
 def cmd_hook(args) -> int:
     hook = core.install_hook(_project(args))
     print(f"已安装 git 钩子：{hook}")
@@ -177,6 +312,26 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--version", action="version", version=f"hx {__version__}")
     p.add_argument("-C", "--project", default=".", help="项目目录（默认当前目录）")
     sub = p.add_subparsers(dest="command", metavar="命令")
+
+    s = sub.add_parser("save", help="【常用】一键保存这个项目的 Agent 环境")
+    s.add_argument("-m", "--message", help="这次保存的说明（不写会自动生成）")
+    s.add_argument("--push", action="store_true", help="保存后推送到远端")
+    s.set_defaults(func=cmd_save)
+
+    s = sub.add_parser("load", help="【常用】一键载入：还原配置并检查环境")
+    s.add_argument("source", nargs="?", help=".hxb 文件或 git 仓库地址（省略表示当前项目）")
+    s.add_argument("-y", "--yes", action="store_true", help="不询问，直接载入")
+    s.add_argument("--force", action="store_true", help="覆盖本机已有的不同文件（会先备份）")
+    s.add_argument("--dry-run", action="store_true", help="只显示会放置哪些文件")
+    s.set_defaults(func=cmd_load)
+
+    s = sub.add_parser("auto", help="查看或开关自动保存")
+    s.add_argument("state", nargs="?", choices=("on", "off"))
+    s.set_defaults(func=cmd_auto)
+
+    for name, fn in (("auto-save", cmd_auto_save), ("auto-load", cmd_auto_load)):
+        s = sub.add_parser(name)   # 给钩子用，不在帮助里显示
+        s.set_defaults(func=fn)
 
     s = sub.add_parser("init", help="在项目里初始化 harness")
     s.add_argument("--agent", help="Agent 类型（默认自动检测）")
@@ -233,8 +388,7 @@ def main(argv=None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     if not getattr(args, "func", None):
-        parser.print_help()
-        return 0
+        args.func = cmd_home
     try:
         return args.func(args)
     except HxError as e:

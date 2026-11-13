@@ -105,6 +105,7 @@ def init(project: Path, agent: str | None = None) -> dict:
         "name": project.resolve().name,
         "agent": {"kind": agent},
         "capture": {"max_sessions": 20, "handoff_sessions": 5},
+        "auto_save": True,
         "distiller": "builtin",
         "secrets": [],
     }
@@ -460,3 +461,75 @@ def install_hook(project: Path) -> Path:
         hook.write_text(existing.rstrip("\n") + "\n\n" + HOOK_BODY, encoding="utf-8")
     hook.chmod(0o755)
     return hook
+
+
+# ---------- 一键保存 / 载入 ----------
+
+CATEGORY_NAMES = {
+    "env": "运行环境", "instructions": "指令", "settings": "设置", "skills": "技能",
+    "agents": "子 Agent", "commands": "命令", "rules": "规则", "hooks": "钩子",
+    "mcp": "MCP", "plugins": "插件", "memory": "记忆", "sessions": "会话",
+    "context": "意图与决策", "other": "其他",
+}
+
+
+def describe_diff(d: dict) -> str:
+    """把 diff 结果写成一句人话，用作自动保存的说明。"""
+    parts = [f"{label}改为 {new}" for label, _, new in d["meta"] if label in ("模型", "Agent 版本") and new]
+    for cat, ch in sorted(d["categories"].items()):
+        n = len(ch["added"]) + len(ch["removed"]) + len(ch["changed"])
+        parts.append(f"{CATEGORY_NAMES.get(cat, cat)} {n} 项")
+    return "，".join(parts)
+
+
+def git_busy(project: Path) -> bool:
+    """仓库是否正在合并、变基等操作中。这时不应该自动提交。"""
+    gd = Path(gitutil.git(project, "rev-parse", "--absolute-git-dir").strip())
+    return any((gd / n).exists() for n in ("MERGE_HEAD", "rebase-merge", "rebase-apply",
+                                           "CHERRY_PICK_HEAD", "REVERT_HEAD", "BISECT_LOG"))
+
+
+def save(project: Path, message: str | None = None, push: bool = False) -> dict:
+    """一键保存：没初始化就初始化，抓取，能提交就提交。"""
+    first = not (harness_dir(project) / MANIFEST).exists()
+    if first:
+        init(project)
+    is_repo = gitutil.is_repo(project)
+    previous = None
+    if is_repo:
+        rows = log(project)
+        if rows:
+            previous = lock_at(project, rows[0]["commit"])
+    result = capture(project)
+    result.update(first=first, committed=False, pushed=False, reason=None)
+    if not is_repo:
+        result["reason"] = "no-git"
+        return result
+    if git_busy(project):
+        result["reason"] = "git-busy"
+        return result
+    if not message:
+        summary = describe_diff(diff(previous, result["lock"])) if previous else ""
+        message = f"hx 保存：{summary}" if summary else "hx 保存：初始快照"
+    result.update(snapshot(project, message, do_capture=False))
+    if push and gitutil.git(project, "rev-parse", "--abbrev-ref", "@{u}", check=False).strip():
+        gitutil.git(project, "push", "-q")
+        result["pushed"] = True
+    return result
+
+
+def fetch_source(source: str, into: Path) -> Path:
+    """把 load 的来源变成本地项目目录。来源可以是 .hxb 文件或 git 地址。"""
+    src = Path(source)
+    if src.is_file():
+        import_bundle(src.resolve(), into)
+        return into
+    if "://" in source or source.startswith("git@") or source.endswith(".git"):
+        name = source.rstrip("/").rsplit("/", 1)[-1].rsplit(":", 1)[-1]
+        name = name[:-4] if name.endswith(".git") else name
+        dest = into / name
+        if dest.exists():
+            raise HxError(f"目录 {dest} 已经存在。请进入它再运行 hx load。")
+        gitutil.git(into, "clone", "-q", source, str(dest))
+        return dest
+    raise HxError(f"看不懂的来源 {source!r}。请给一个 .hxb 文件或 git 仓库地址。")
