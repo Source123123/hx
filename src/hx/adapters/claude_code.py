@@ -341,7 +341,7 @@ def digest_session(path: Path, project: Path) -> dict:
             if d.get("type") == "user" and not d.get("isMeta"):
                 text = _user_text(msg).strip()
                 # 以 < 开头的是系统注入的内容（命令输出、提醒），不是用户的话
-                if text and not text.startswith("<"):
+                if text and not text.startswith(("<", "[Request interrupted")):
                     prompts.append(_clip(text, 2000))
             elif d.get("type") == "assistant":
                 model = msg.get("model")

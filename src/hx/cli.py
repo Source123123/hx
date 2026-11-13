@@ -78,12 +78,13 @@ def cmd_diff(args) -> int:
         rows = core.log(project)
         if not rows:
             raise HxError("还没有快照可以比较。")
-        a_ref, b_ref = rows[0]["commit"], None      # 最近的快照 对比 工作区
+        a_ref, b_ref = rows[0]["commit"], None      # 最近的快照 对比 当前状态
+        core.capture(project)                       # 先重新抓取，否则看不到还没抓的改动
     else:
         a_ref, b_ref = args.a, args.b
     a, b = core.lock_at(project, a_ref), core.lock_at(project, b_ref)
     d = core.diff(a, b)
-    print(f"{a.get('snapshot')} → {b.get('snapshot')}{'（工作区）' if b_ref is None else ''}")
+    print(f"{a.get('snapshot')} → {b.get('snapshot')}{'（当前，未提交）' if b_ref is None else ''}")
     if not d["meta"] and not d["categories"]:
         print("没有差异。")
         return 0

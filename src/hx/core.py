@@ -145,7 +145,7 @@ def capture(project: Path) -> dict:
         "hx": __version__,
         "agent": {"kind": adapter.name, "version": ctx.info.get("agent_version")},
         "model": ctx.info.get("model"),
-        "code_commit": gitutil.head(project) if gitutil.is_repo(project) else None,
+        "code_commit": gitutil.code_head(project, HARNESS_DIR) if gitutil.is_repo(project) else None,
         "entries": sorted(ctx.entries, key=lambda e: e["path"]),
     }
     lock["snapshot"] = snapshot_id(lock)
@@ -173,9 +173,9 @@ def _register_context(ctx: CaptureContext, path: Path) -> None:
 def snapshot(project: Path, message: str, do_capture: bool = True) -> dict:
     if not gitutil.is_repo(project):
         raise HxError("这个目录不是 git 仓库。先运行 git init。")
-    code = gitutil.head(project)
     result = capture(project) if do_capture else {"lock": load_lock(project)}
     lock = result["lock"]
+    code = lock.get("code_commit")
     gitutil.git(project, "add", "-A", "--", HARNESS_DIR)
     if not gitutil.git(project, "status", "--porcelain", "--", HARNESS_DIR).strip():
         return {**result, "committed": False}

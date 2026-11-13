@@ -34,3 +34,11 @@ def head(project: Path) -> str | None:
 def show_file(project: Path, rev: str, relpath: str) -> str | None:
     r = subprocess.run(["git", "show", f"{rev}:{relpath}"], cwd=project, capture_output=True, text=True)
     return r.stdout if r.returncode == 0 else None
+
+
+def code_head(project: Path, exclude: str) -> str | None:
+    """最近一个改动了 exclude 目录之外内容的提交，也就是"代码"的当前版本。"""
+    if not head(project):
+        return None
+    out = git(project, "log", "-1", "--format=%H", "--", ".", f":(exclude){exclude}", check=False).strip()
+    return out or None
