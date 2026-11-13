@@ -1,5 +1,6 @@
 {
   "name": "hx",
+  "description": "hx：保存、版本化、迁移项目的 Agent 环境。",
   "owner": { "name": "Source123123" },
   "plugins": [
     {

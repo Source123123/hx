@@ -525,8 +525,11 @@ def fetch_source(source: str, into: Path) -> Path:
         import_bundle(src.resolve(), into)
         return into
     if "://" in source or source.startswith("git@") or source.endswith(".git"):
-        name = source.rstrip("/").rsplit("/", 1)[-1].rsplit(":", 1)[-1]
-        name = name[:-4] if name.endswith(".git") else name
+        trimmed = source.rstrip("/")
+        trimmed = trimmed[:-4].rstrip("/") if trimmed.endswith(".git") else trimmed
+        name = trimmed.rsplit("/", 1)[-1].rsplit(":", 1)[-1]
+        if not name:
+            raise HxError(f"无法从 {source!r} 判断项目名。")
         dest = into / name
         if dest.exists():
             raise HxError(f"目录 {dest} 已经存在。请进入它再运行 hx load。")

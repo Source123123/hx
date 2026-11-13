@@ -221,8 +221,9 @@ def cmd_load(args) -> int:
         if a.status == "conflict":
             print(f"! {a.target}  本机已有不同的版本，没有改动")
     print(f"已载入：放置了 {n['written']} 项配置" + (f"，{n['conflict']} 项因本机已有不同版本而跳过（hx load --force 可覆盖）" if n["conflict"] else "") + "。")
-    problems = [c for c in core.doctor(project) if c.level == "fail"]
-    notes = [c for c in core.doctor(project) if c.level == "warn" and "快照之后改过" not in c.title]
+    checks = core.doctor(project)
+    problems = [c for c in checks if c.level == "fail"]
+    notes = [c for c in checks if c.level == "warn" and "快照之后改过" not in c.title]
     if problems or notes:
         print("\n还需要你处理：")
         for c in problems + notes:

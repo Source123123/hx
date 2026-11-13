@@ -165,6 +165,47 @@ class FlowTest(unittest.TestCase):
         self.assertEqual(core.load_lock(dest)["snapshot"], r["snapshot"])
         self.assertTrue((self.b.claude / "projects" / project_slug(dest) / "s1.jsonl").is_file())
 
+    def test_one_step_save_and_load(self):
+        r = core.save(self.project)                      # 没初始化过也能直接保存
+        self.assertTrue(r["first"] and r["committed"])
+        self.assertFalse(core.save(self.project)["committed"])
+        (self.a.claude / "skills/deploy/SKILL.md").write_text("v2\n")
+        self.assertTrue(core.save(self.project)["committed"])
+        self.assertEqual(core.log(self.project)[0]["subject"], "hx 保存：技能 1 项")
+        # 载入：从 git 地址一步到位
+        self.b.use()
+        into = self.root / "elsewhere"
+        into.mkdir()
+        dest = core.fetch_source(f"file://{self.project}", into)
+        self.assertEqual(dest, into / "demo")
+        core.materialize(dest)
+        self.assertEqual((self.b.claude / "skills/deploy/SKILL.md").read_text(), "v2\n")
+
+    def test_save_without_git_and_during_merge(self):
+        plain = self.root / "plain"
+        plain.mkdir()
+        r = core.save(plain)
+        self.assertEqual((r["committed"], r["reason"]), (False, "no-git"))
+        self.assertTrue((plain / ".harness/harness.lock.json").is_file())
+        core.save(self.project)
+        git_dir = self.project / ".git"
+        (git_dir / "MERGE_HEAD").write_text("0" * 40 + "\n")
+        (self.a.claude / "skills/deploy/SKILL.md").write_text("v3\n")
+        r = core.save(self.project)
+        self.assertEqual((r["committed"], r["reason"]), (False, "git-busy"))
+
+    def test_hooks_never_touch_unmanaged_projects(self):
+        from hx import cli
+        plain = self.root / "plain2"
+        plain.mkdir()
+        os.environ["CLAUDE_PROJECT_DIR"] = str(plain)
+        try:
+            self.assertEqual(cli.main(["auto-save"]), 0)
+            self.assertEqual(cli.main(["auto-load"]), 0)
+        finally:
+            del os.environ["CLAUDE_PROJECT_DIR"]
+        self.assertEqual(list(plain.iterdir()), [])
+
     def test_import_rejects_unsafe_paths(self):
         bad = self.root / "bad.hxb"
         with tarfile.open(bad, "w:gz") as tar:
