@@ -295,8 +295,10 @@ class ClaudeCodeAdapter(Adapter):
             if p["id"] in installed:
                 checks.append(Check("ok", f"插件 {p['id']} 已安装"))
             else:
-                checks.append(Check("warn", f"插件 {p['id']} 未安装",
-                                    f"在 Claude Code 里运行 /plugin install {p['id']}"))
+                src = p.get("source") or {}
+                where = src.get("repo") or src.get("url")
+                cmd = f"/plugin install {p['name']} --marketplace {where}" if where else f"/plugin install {p['id']}"
+                checks.append(Check("warn", f"插件 {p['id']} 未安装", f"在 Claude Code 里输入 {cmd}"))
         return checks
 
     # ---------- 团队一键接入 ----------

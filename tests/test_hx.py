@@ -206,6 +206,22 @@ class FlowTest(unittest.TestCase):
             del os.environ["CLAUDE_PROJECT_DIR"]
         self.assertEqual(list(plain.iterdir()), [])
 
+    def test_team_onboarding(self):
+        core.save(self.project)
+        settings = self.project / ".claude/settings.json"
+        r = core.team(self.project, True)
+        self.assertTrue(r["enabled"] and r["committed"])
+        data = json.loads(settings.read_text())
+        self.assertTrue(data["enabledPlugins"]["hx@hx"])
+        self.assertEqual(data["extraKnownMarketplaces"]["hx"]["source"]["source"], "github")
+        self.assertEqual(core.team(self.project, True)["changed"], [])       # 重复开启不产生改动
+        # 用户自己的设置要保留；文件有未提交的改动时不替用户提交
+        data["permissions"] = {"allow": ["Bash(ls)"]}
+        settings.write_text(json.dumps(data))
+        r = core.team(self.project, False)
+        self.assertFalse(r["enabled"] or r["committed"])
+        self.assertEqual(json.loads(settings.read_text()), {"permissions": {"allow": ["Bash(ls)"]}})
+
     def test_import_rejects_unsafe_paths(self):
         bad = self.root / "bad.hxb"
         with tarfile.open(bad, "w:gz") as tar:

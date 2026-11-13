@@ -20,6 +20,16 @@ hx 把它们收进项目里的 `.harness/` 目录，用 git 记录每一次变�
 | 在新机器上接手项目 | 把项目 clone 下来，在 Claude Code 里输入 `/hx:load` |
 | 关掉自动保存 | 对 Claude 说"关掉 hx 自动保存"，或运行 `hx auto off` |
 
+### 团队一键接入
+
+想让同事连安装命令都不用输，在项目里开启一次（或者第一次 `/hx:save` 时 Claude 会问你）：
+
+```bash
+hx team on
+```
+
+它会在项目的 `.claude/settings.json` 里声明 hx 插件并提交。你 `git push` 之后，同事 clone 项目、用 Claude Code 打开并信任这个目录时，会被提示安装 hx；装好输入 `/hx:load` 就接上了。前提是同事的 GitHub 账号能访问 hx 所在的仓库。关闭用 `hx team off`。
+
 说明：
 
 - 第一次需要手动 `/hx:save` 一次，之后这个项目才会自动保存。没有保存过的项目，插件不会碰。
@@ -56,6 +66,7 @@ hx load https://github.com/你/你的项目
 | `hx save` | **常用。** 一键保存：需要时自动初始化，抓取并提交。`--push` 同时推送 |
 | `hx load [来源]` | **常用。** 一键载入：还原配置并检查环境 |
 | `hx auto on/off` | 开关自动保存 |
+| `hx team on/off` | 开关团队一键接入 |
 | `hx log` | 快照历史。`--all` 同时列出带快照标记的代码提交 |
 | `hx diff [A] [B]` | 比较两个快照；不带参数时比较最近的快照和当前状态 |
 | `hx restore <快照>` | 把 `.harness/` 恢复到历史快照 |

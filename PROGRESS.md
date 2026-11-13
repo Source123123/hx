@@ -12,20 +12,24 @@
 
 - [x] M6（v0.2）一键 save / load、自动保存钩子、Claude Code 插件打包（10 个测试通过；`claude plugin validate` 通过；用 `claude --plugin-dir` 实际跑通 /hx:save）
 
+- [x] M7 团队一键接入 `hx team on/off`（11 个测试通过）
+
 ## 已验证
+- 从 GitHub 安装插件（`claude plugin marketplace add Source123123/hx` + `claude plugin install hx@hx`）：通过
+- 真实的 installed_plugins.json / known_marketplaces.json 格式与插件清单解析一致：通过
 - 模拟机器 A 抓取 → 机器 B clone 后 doctor / materialize：通过
 - 导出 .hxb（含原始对话）→ 机器 C 导入并还原：通过
 - 密钥不进包（settings env、MCP env/headers、文本里的 key）：通过
 
 ## 未验证 / 已知局限
 - 没有在真实的第二台机器上用真实的 Claude Code 打开还原后的项目验证。
-- 插件清单的解析是按 ~/.claude/plugins/installed_plugins.json 的格式写的，只用构造的数据测过。
+- 团队一键接入写入的 .claude/settings.json 字段（extraKnownMarketplaces / enabledPlugins）没有在交互式会话里确认过"同事打开项目时弹出安装提示"这一步。
 - 还原的原始对话能否被 `claude --resume` 正常续上，没有测（标为实验性）。
 - Windows 路径没有测。
 
 ## 下一步
 0. 用户按 README 从 GitHub 安装插件实测（仓库私有时安装需要 GitHub 登录）；/hx:load 的交互流程还没有在真实会话里跑过。
-1. 团队一键接入：把插件声明写进项目的 .claude/settings.json，同事打开项目时自动提示安装。
+1. 第二个 adapter：Codex CLI（见 docs/DESIGN.md 路线图）。需要在装有 Codex 的机器上核对真实文件格式。
 1b. 插件图标（提交到官方目录才需要）。
 2. 第二个 adapter（Codex 或 Cursor），验证中立格式。
 3. LLM 提炼器：从会话里自动抽取决策和待办，写入 decisions/ 和 tasks.md 的草稿。
