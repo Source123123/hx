@@ -28,6 +28,7 @@ PROJECT_TREES = {                # .claude/ 下的目录 -> 类别
     "skills": "skills", "agents": "agents", "commands": "commands",
     "rules": "rules", "hooks": "hooks", "output-styles": "other",
 }
+SECRET_NAME = re.compile(r"(?i)secret|token|password|passwd|key|credential|auth")
 EDIT_TOOLS = ("Edit", "Write", "MultiEdit", "NotebookEdit")
 
 
@@ -112,13 +113,16 @@ class ClaudeCodeAdapter(Adapter):
                          exclude=("synced",) if d == "skills" else ())
 
     def _settings_text(self, ctx: CaptureContext, settings: dict) -> str:
-        """settings 里 env 的值一律换成 ${NAME}，名字登记为需要的密钥。"""
+        """settings 的 env 里，看起来是密钥的条目从包里删掉，只登记名字；其余保留。
+        （settings.json 不支持 ${NAME} 展开，所以不能像 MCP 那样留占位符。）"""
         settings = json.loads(json.dumps(settings))
         env = settings.get("env")
         if isinstance(env, dict):
-            for k in env:
-                env[k] = "${%s}" % k
-                ctx.secrets.add(k)
+            for k in list(env):
+                v = str(env[k])
+                if SECRET_NAME.search(k) or ctx.redactor.text(v) != v:
+                    del env[k]
+                    ctx.secrets.add(k)
         return json.dumps(settings, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
 
     def _capture_mcp(self, ctx: CaptureContext) -> None:
