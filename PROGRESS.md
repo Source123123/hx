@@ -28,4 +28,4 @@
 4. `hx status`：不改文件，只报告当前状态与上次快照的差异。
 
 ## 备注
-- 本仓库目前只在本地容器里，没有远端。容器回收后会丢失，需要用户提供 GitHub 仓库后 push。
+- 远端：https://github.com/Source123123/hx（main 分支）。每完成一步就 commit 并 push。
