@@ -186,6 +186,8 @@ def _save_report(r: dict, project: Path) -> None:
         print("已推送到远端。")
     elif r["committed"]:
         print("要分享给别人：git push（或 hx save --push），对方 clone 后运行 hx load。")
+    if r["first"]:
+        print("团队协作：运行 hx team on，同事打开项目时会自动被提示安装 hx。")
 
 
 def cmd_save(args) -> int:
@@ -242,6 +244,23 @@ def cmd_auto(args) -> int:
         from .util import MANIFEST, write_json
         write_json(core.harness_dir(project) / MANIFEST, manifest)
     print(f"自动保存：{'开' if manifest.get('auto_save') else '关'}（需要安装 Claude Code 插件才会在会话结束时触发）")
+    return 0
+
+
+def cmd_team(args) -> int:
+    project = _project(args)
+    r = core.team(project, None if not args.state else args.state == "on")
+    print(f"团队一键接入：{'开' if r['enabled'] else '关'}")
+    if r["changed"]:
+        if r["committed"]:
+            print(f"已修改并提交 {', '.join(r['changed'])}。git push 之后生效。")
+        else:
+            print(f"已修改 {', '.join(r['changed'])}，请把它 git commit 并 push。")
+    if r["enabled"]:
+        print("同事 clone 项目、用 Claude Code 打开并信任这个目录后，会被提示安装 hx 插件；装好输入 /hx:load 即可。")
+        print("前提：同事的 GitHub 账号能访问 hx 插件所在的仓库。")
+    elif not args.state:
+        print("开启：hx team on")
     return 0
 
 
@@ -329,6 +348,10 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("auto", help="查看或开关自动保存")
     s.add_argument("state", nargs="?", choices=("on", "off"))
     s.set_defaults(func=cmd_auto)
+
+    s = sub.add_parser("team", help="开关团队一键接入：同事打开项目时自动提示安装 hx")
+    s.add_argument("state", nargs="?", choices=("on", "off"))
+    s.set_defaults(func=cmd_team)
 
     for name, fn in (("auto-save", cmd_auto_save), ("auto-load", cmd_auto_load)):
         s = sub.add_parser(name)   # 给钩子用，不在帮助里显示

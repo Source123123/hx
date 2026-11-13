@@ -29,6 +29,15 @@ PROJECT_TREES = {                # .claude/ 下的目录 -> 类别
     "rules": "rules", "hooks": "hooks", "output-styles": "other",
 }
 SECRET_NAME = re.compile(r"(?i)secret|token|password|passwd|key|credential|auth")
+PLUGIN_MARKET = "hx"
+PLUGIN_ID = "hx@hx"
+
+
+def plugin_repo() -> str:
+    """hx 插件所在的 GitHub 仓库。fork 之后可以用环境变量 HX_PLUGIN_REPO 改掉。"""
+    return os.environ.get("HX_PLUGIN_REPO") or "Source123123/hx"
+
+
 EDIT_TOOLS = ("Edit", "Write", "MultiEdit", "NotebookEdit")
 
 
@@ -289,6 +298,38 @@ class ClaudeCodeAdapter(Adapter):
                 checks.append(Check("warn", f"插件 {p['id']} 未安装",
                                     f"在 Claude Code 里运行 /plugin install {p['id']}"))
         return checks
+
+    # ---------- 团队一键接入 ----------
+
+    def team_enabled(self, project: Path) -> bool:
+        settings = read_json(project / ".claude/settings.json", {}) or {}
+        return bool((settings.get("enabledPlugins") or {}).get(PLUGIN_ID))
+
+    def team_setup(self, project: Path, enable: bool) -> list:
+        """在项目的 .claude/settings.json 里声明插件市场并启用 hx 插件。
+        同事信任这个项目目录后，Claude Code 会提示安装。"""
+        path = project / ".claude/settings.json"
+        settings = read_json(path, {}) or {}
+        before = json.dumps(settings, sort_keys=True)
+        markets = settings.setdefault("extraKnownMarketplaces", {})
+        plugins = settings.setdefault("enabledPlugins", {})
+        if enable:
+            markets[PLUGIN_MARKET] = {"source": {"source": "github", "repo": plugin_repo()}}
+            plugins[PLUGIN_ID] = True
+        else:
+            markets.pop(PLUGIN_MARKET, None)
+            plugins.pop(PLUGIN_ID, None)
+        for key in ("extraKnownMarketplaces", "enabledPlugins"):
+            if not settings[key]:
+                del settings[key]
+        if json.dumps(settings, sort_keys=True) == before:
+            return []
+        if settings:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(settings, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        else:
+            path.unlink()
+        return [".claude/settings.json"]
 
     # ---------- 原始对话 ----------
 

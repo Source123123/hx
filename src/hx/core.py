@@ -536,3 +536,30 @@ def fetch_source(source: str, into: Path) -> Path:
         gitutil.git(into, "clone", "-q", source, str(dest))
         return dest
     raise HxError(f"看不懂的来源 {source!r}。请给一个 .hxb 文件或 git 仓库地址。")
+
+
+# ---------- 团队一键接入 ----------
+
+def team(project: Path, enable: bool | None) -> dict:
+    """开关团队一键接入。enable 为 None 时只查询。
+    改动的文件如果此前没有未提交的修改，就单独提交它，这样 push 之后同事马上能用。"""
+    manifest = load_manifest(project)
+    adapter = get_adapter(manifest["agent"]["kind"])
+    if enable is None:
+        return {"enabled": adapter.team_enabled(project), "changed": [], "committed": False}
+    is_repo = gitutil.is_repo(project)
+    dirty_before = set()
+    if is_repo:
+        out = gitutil.git(project, "status", "--porcelain", "-z")
+        dirty_before = {item[3:] for item in out.split("\0") if item}
+    changed = adapter.team_setup(project, enable)
+    if changed is None:
+        raise HxError(f"{adapter.name} 还不支持团队一键接入。")
+    committed = False
+    clean = [f for f in changed if f not in dirty_before and not any(d.endswith("/") and f.startswith(d) for d in dirty_before)]
+    if is_repo and changed and len(clean) == len(changed) and not git_busy(project):
+        gitutil.git(project, "add", "-A", "--", *changed)
+        gitutil.git(project, "commit", "-q", "-m",
+                    f"hx：{'开启' if enable else '关闭'}团队一键接入", "--", *changed)
+        committed = True
+    return {"enabled": adapter.team_enabled(project), "changed": changed, "committed": committed}

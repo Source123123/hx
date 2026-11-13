@@ -136,6 +136,14 @@ class Adapter:
         """检查这台机器能不能跑这个 harness。返回 Check 列表。"""
         return []
 
+    def team_setup(self, project: Path, enable: bool) -> list:
+        """团队一键接入：在项目里声明 hx 插件，同事打开项目时 Agent 会提示安装。
+        返回被修改的项目文件（相对路径）。不支持的 Agent 返回 None。"""
+        return None
+
+    def team_enabled(self, project: Path) -> bool:
+        return False
+
     def transcripts(self, project: Path, home: Path) -> list:
         """原始对话记录文件的路径列表，供 export --include-transcripts 使用。"""
         return []
