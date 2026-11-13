@@ -4,8 +4,8 @@
 
 ## 状态
 - [x] M0 仓库初始化、设计文档
-- [ ] M1 核心模块：manifest / redact / gitutil / adapter 基类
-- [ ] M2 Claude Code adapter：capture + materialize
+- [x] M1 核心模块：manifest / redact / gitutil / adapter 基类
+- [x] M2 Claude Code adapter（已写完，未测试）
 - [ ] M3 CLI：init / capture / snapshot / log / diff / doctor / materialize / export / import
 - [ ] M4 测试 + 端到端验证（两台"机器"模拟迁移）
 - [ ] M5 文档收尾（README、扩展指南）
