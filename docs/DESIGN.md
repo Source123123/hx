@@ -84,6 +84,21 @@ git push（或 hx export 成包文件）          hx materialize   还原 Agent 
 - 目标位置有不同内容：默认不动并报告冲突；加 `--force` 才覆盖，覆盖前备份为 `.hx-bak`。
 - MCP 服务器合并进项目的 `.mcp.json`，密钥保持 `${NAME}` 形式，由目标机器的环境变量提供。
 
+## 6.1 一键使用
+
+面向不写代码的用户，日常只有两个动作：
+
+- `hx save`：没有初始化就初始化；抓取；是 git 仓库就提交（说明自动生成，如"技能 1 项，会话 2 项"）；不是 git 仓库也照样写入 `.harness/`。仓库正在合并或变基时只更新文件，不提交。
+- `hx load [来源]`：来源可以是 git 地址或 `.hxb` 文件；列出将写入本机的文件并要求确认；还原；体检并用一句话说明每个待处理项。
+
+仓库本身同时是一个 Claude Code 插件（`.claude-plugin/`、`commands/`、`hooks/`、`bin/hx`），自带启动器，不需要 pip：
+
+- `/hx:save`、`/hx:load`：由 Agent 代为执行并用自然语言向用户说明结果。
+- `SessionEnd` 钩子调用 `hx auto-save`：只对已经保存过、且 `auto_save` 为真的项目生效。
+- `SessionStart` 钩子调用 `hx auto-load`：**只报告，不写任何文件**，提示 Agent 阅读交接简报、提示用户有配置待载入。
+
+自动载入故意不做：载入会把项目带来的设置写进用户的主目录，其中可以包含钩子命令。如果打开一个仓库就自动写入，恶意仓库就能借此在用户机器上执行代码。所以载入必须有一次明确的确认。
+
 ## 7. 安全
 
 - 所有复制进包的文本都经过脱敏器：已知格式的密钥（API key、token、私钥块）和名字像密钥的配置值都被替换为占位符。
@@ -104,7 +119,8 @@ git push（或 hx export 成包文件）          hx materialize   还原 Agent 
 
 ## 9. 路线图
 
-- **v0.1（当前）**：Claude Code adapter；init / capture / snapshot / log / diff / doctor / materialize / export / import / hook。
-- **v0.2**：第二个 adapter（Codex 或 Cursor），验证中立格式；指令文件在 `CLAUDE.md` 和 `AGENTS.md` 之间转换。
-- **v0.3**：LLM 提炼器（从会话中自动抽取决策和待办）；上下文的三方合并。
-- **v0.4**：OCI 分发；团队服务端（浏览 harness 历史、按 harness 对比产出质量）。
+- **v0.1**：Claude Code adapter；init / capture / snapshot / log / diff / doctor / materialize / export / import / hook。
+- **v0.2（当前）**：一键 save / load；Claude Code 插件；会话结束自动保存。
+- **v0.3**：第二个 adapter（Codex 或 Cursor），验证中立格式；指令文件在 `CLAUDE.md` 和 `AGENTS.md` 之间转换。
+- **v0.4**：LLM 提炼器（从会话中自动抽取决策和待办）；上下文的三方合并。
+- **v0.5**：OCI 分发；团队服务端（浏览 harness 历史、按 harness 对比产出质量）。

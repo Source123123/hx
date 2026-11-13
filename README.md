@@ -4,66 +4,64 @@
 
 hx 把它们收进项目里的 `.harness/` 目录，用 git 记录每一次变化，并能在另一台机器上还原。
 
-## 安装
+## 最简单的用法：装成 Claude Code 插件
 
-需要 Python 3.9 以上和 git，没有其他依赖。
+需要电脑上有 Python 3.9 以上和 git。在 Claude Code 里输入一次：
 
-```bash
-pip install -e .
+```
+/plugin install hx --marketplace Source123123/hx
 ```
 
-## 五分钟上手
+装好之后：
 
-在机器 A 上，进入你的项目目录：
+| 你想做的事 | 怎么做 |
+|---|---|
+| 保存这个项目的 Agent 环境 | 什么都不用做，会话结束时自动保存。想立刻保存就输入 `/hx:save` |
+| 在新机器上接手项目 | 把项目 clone 下来，在 Claude Code 里输入 `/hx:load` |
+| 关掉自动保存 | 对 Claude 说"关掉 hx 自动保存"，或运行 `hx auto off` |
 
-```bash
-hx init
-```
+说明：
 
-```bash
-hx snapshot -m "初始快照"
-```
+- 第一次需要手动 `/hx:save` 一次，之后这个项目才会自动保存。没有保存过的项目，插件不会碰。
+- 自动保存只在本地做一次 git 提交，而且只提交 `.harness/` 目录，不会推送，也不会动你的其他文件。
+- `/hx:load` 会先列出要放到本机的文件，等你同意再执行。之后 Claude 会告诉你还缺什么（比如某个环境变量），并概括项目进展。
+- 打开一个带 `.harness/` 的项目时，Claude 会被提示先读交接简报。
 
-```bash
-git push
-```
-
-在机器 B 上，`git clone` 之后：
-
-```bash
-hx doctor
-```
+## 不用插件：命令行
 
 ```bash
-hx materialize
+pip install git+https://github.com/Source123123/hx
 ```
 
-`doctor` 告诉你这台机器缺什么（环境变量、MCP 需要的命令、插件）；`materialize` 把配置放回 Agent 能读到的位置。
-
-没有共享的 git 仓库时，用包文件传递：
+日常只需要两条命令。保存：
 
 ```bash
-hx export -o demo.hxb
+hx save
 ```
+
+载入（可以直接给 git 地址或 `.hxb` 包文件，会自动下载）：
 
 ```bash
-hx -C 新项目目录 import demo.hxb
+hx load https://github.com/你/你的项目
 ```
 
-## 命令
+不带任何参数运行 `hx`，它会告诉你当前状态和下一步该做什么。
+
+没有共享的 git 仓库时，用 `hx export` 导出一个 `.hxb` 文件发给对方，对方 `hx load 文件.hxb`。
+
+## 全部命令
 
 | 命令 | 作用 |
 |---|---|
-| `hx init` | 在项目里创建 `.harness/` |
-| `hx capture` | 抓取当前的配置和上下文，不提交 |
-| `hx snapshot -m "说明"` | 抓取并提交一个快照 |
+| `hx save` | **常用。** 一键保存：需要时自动初始化，抓取并提交。`--push` 同时推送 |
+| `hx load [来源]` | **常用。** 一键载入：还原配置并检查环境 |
+| `hx auto on/off` | 开关自动保存 |
 | `hx log` | 快照历史。`--all` 同时列出带快照标记的代码提交 |
 | `hx diff [A] [B]` | 比较两个快照；不带参数时比较最近的快照和当前状态 |
-| `hx doctor` | 检查本机能不能跑这个 harness |
-| `hx materialize` | 把配置还原到本机。`--dry-run` 预演，`--force` 覆盖（会备份） |
 | `hx restore <快照>` | 把 `.harness/` 恢复到历史快照 |
 | `hx export` / `hx import` | 导出、导入单个包文件 |
 | `hx hook` | 安装 git 钩子，让每个代码提交都带上当时的快照 ID |
+| `hx init` / `capture` / `snapshot` / `doctor` / `materialize` | `save` 和 `load` 的分解步骤，需要精细控制时用 |
 
 ## 包里有什么
 
@@ -94,13 +92,14 @@ hx -C 新项目目录 import demo.hxb
 - 密钥不进包。MCP 配置里的密钥值会换成 `${名字}`，settings 里的密钥条目会被删掉，名字登记在 `harness.json` 里，由目标机器的环境变量提供。
 - 所有复制进包的文本都会过一遍脱敏规则（常见的 API key、token、私钥、带密码的 URL）。
 - **脱敏是基于规则的，不保证没有遗漏。** 会话摘要里有你对 Agent 说过的话。把仓库或包文件分享给团队之外的人之前，请自己看一遍 `.harness/`。
+- 载入会把项目带来的设置、技能放进你的 `~/.claude/`，其中可能有会自动执行命令的内容。**只载入你信任的项目。** 载入前会列出文件并要求确认；本机已有的不同文件不会被覆盖。
 - 原始对话记录默认不导出，`hx export --include-transcripts` 才会带上。
 
 ## 做不到的事
 
 - 不保证 Agent 在新机器上做出同样的结果。模型有随机性，hx 保证的是配置和上下文一致。
 - 不安装系统依赖。请用 Dev Container、Nix 或 Docker，hx 会记录这些文件的哈希。
-- 不自动安装插件，`doctor` 会告诉你缺哪些。
+- 不自动安装项目用到的其他插件，载入时会告诉你缺哪些。
 - 目前只支持 Claude Code。接入其他 Agent 见 [docs/EXTENDING.md](docs/EXTENDING.md)。
 
 ## 文档
