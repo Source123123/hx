@@ -176,6 +176,13 @@ def snapshot(project: Path, message: str, do_capture: bool = True) -> dict:
     result = capture(project) if do_capture else {"lock": load_lock(project)}
     lock = result["lock"]
     code = lock.get("code_commit")
+    # 被引用的项目文件如果还没提交，别的机器 clone 下来会对不上
+    refs = [e["path"] for e in lock["entries"] if e["scope"] == "project"]
+    dirty = []
+    if refs:
+        out = gitutil.git(project, "status", "--porcelain", "-z", "--", *refs)
+        dirty = sorted(item[3:] for item in out.split("\0") if item)
+    result = {**result, "uncommitted": dirty}
     gitutil.git(project, "add", "-A", "--", HARNESS_DIR)
     if not gitutil.git(project, "status", "--porcelain", "--", HARNESS_DIR).strip():
         return {**result, "committed": False}

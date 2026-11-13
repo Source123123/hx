@@ -54,6 +54,9 @@ def cmd_snapshot(args) -> int:
         print(f"已提交：{result['commit'][:10]}")
     else:
         print("harness 没有变化，未产生新提交。")
+    if result.get("uncommitted"):
+        print(f"提醒：快照引用的这些项目文件还有未提交的改动：{', '.join(result['uncommitted'])}")
+        print("      请把它们也 git commit，否则别的机器拿到的内容会和快照对不上。")
     return 0
 
 
