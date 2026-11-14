@@ -19,7 +19,7 @@
 │   │   ├── mcp.json            MCP 服务器（中立写法，见第 5 节）
 │   │   └── plugins.json        已安装插件清单
 │   └── codex/
-│       ├── user/               来自 ~/.codex：AGENTS.md、skills/、prompts/、config.reference.toml
+│       ├── user/               来自 ~/.codex：AGENTS.md、AGENTS.override.md、skills/、prompts/、config.reference.toml
 │       ├── shared-skills/      来自 ~/.agents/skills，载入时放回该目录
 │       ├── plugins.json        codex plugin list --json 的已安装清单，仅用于体检
 │       └── mcp.json            用户级和项目级 MCP 服务器（中立写法）

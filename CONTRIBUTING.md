@@ -75,7 +75,8 @@ for v in 3.9 3.10 3.11 3.12 3.13 3.14; do PYTHONPATH=src uv run -q --no-project 
 | `src/hx/extras.py` | 可重建资源、外部状态声明 |
 | `src/hx/handoff.py` | 交接简报 |
 | `src/hx/gitutil.py` | git 封装 |
-| `commands/`、`hooks/`、`bin/`、`.claude-plugin/` | Claude Code 插件 |
+| `commands/`、`hooks/hooks.json`、`bin/`、`.claude-plugin/` | Claude Code 插件 |
+| `codex-skills/`、`hooks/codex.json`、`.codex-plugin/`、`.agents/plugins/` | Codex 插件 |
 
 接入新的 Agent 见 [docs/EXTENDING.md](docs/EXTENDING.md)。
 

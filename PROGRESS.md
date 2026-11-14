@@ -110,3 +110,8 @@
 - 0.6.0 提交 46b1a06 的 GitHub Actions 18/18 组合已通过：https://github.com/Source123123/hx/actions/runs/43563678746 。本轮最后修订的自动测试结果见后续记录。
 
 - 0.6.1 最终本机检查：46/46 测试通过（含后备 TOML、旧格式、Claude Code、跨系统钩子）；测试用认证副本已清理。
+
+### 最终自动测试
+- 0.6.1 代码提交 382b68b 已推送 main，GitHub Actions 的 Windows / macOS / Linux × Python 3.9–3.14 共 18/18 组全部通过（每组 46 个测试及启动器检查）。
+- 结果：https://github.com/Source123123/hx/actions/runs/43564908868 。
+- 本机安装已更新为 hx 0.6.1，包元数据确认运行依赖为空。工作目录位于本机 hx/repo。
