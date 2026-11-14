@@ -17,7 +17,7 @@
 
 - [x] M8（v0.3）多 Agent 核心、会话摘要全团队累积、Codex adapter、跨 Agent 交换（17 个测试通过）
 - [x] M9 跨操作系统：哈希忽略换行差异、统一 LF/UTF-8、Windows 路径、输出编码、Windows 启动器 bin/hx.cmd、三系统 CI（.github/workflows/test.yml）
-- [x] M10（v0.4）兼容性：格式版本检查、git 版本检查、Python 版本检查、可关闭会话摘要；文档体系重写（31 个测试通过）
+- [x] M10（v0.4）兼容性：格式版本检查、git 版本检查、Python 版本检查、可关闭会话摘要；文档体系重写（27 个测试通过）
 
 ## 已验证
 - Python 3.9 / 3.10 / 3.11 / 3.12 / 3.13 / 3.14：本机用 uv 逐个版本跑过全部测试；GitHub Actions 在 Windows、macOS、Linux 上各跑一遍（Ubuntu 的 3.9 在 22.04 镜像上）。
