@@ -12,10 +12,11 @@ import sys
 import tarfile
 from pathlib import Path
 
-from . import __version__, gitutil
+from . import __version__, extras, gitutil
 from .adapters import all_adapters, get_adapter
 from .adapters.base import Action, CaptureContext, Check, Neutral, place_file  # noqa: F401
 from .handoff import get_distiller
+from .portable import Rebaser, localize, machine_id, platform_name
 from .redact import Redactor
 from .util import (HARNESS_DIR, LOCK, MANIFEST, HxError, home_dir, iter_files, read_json,
                    sha256_bytes, write_json, write_text)
@@ -27,7 +28,7 @@ ENV_FILES = (".devcontainer/devcontainer.json", ".devcontainer.json", "Dockerfil
              ".node-version", "rust-toolchain.toml")
 
 API_VERSION = "hx/v1"     # harness.json 的格式版本
-LOCK_VERSION = 2          # harness.lock.json 的格式版本。1：单个 Agent；2：多个 Agent
+LOCK_VERSION = 3          # harness.lock.json 的格式版本。1：单个 Agent；2：多个 Agent；3：包内文本含占位符
 
 INTENT_TEMPLATE = """# 项目意图
 
@@ -172,10 +173,13 @@ def capture(project: Path) -> dict:
     kinds = agent_kinds(manifest)
     h = harness_dir(project)
     home = home_dir()
-    previous = read_json(h / LOCK, {}) or {}
+    try:
+        previous = read_json(h / LOCK, {}) or {}
+    except HxError:
+        previous = {}       # 锁文件损坏或带着合并冲突标记：它是生成出来的，重新生成即可
     prev_agents = previous.get("agents") or {}
 
-    ctx = CaptureContext(project=project, home=home, redactor=Redactor(),
+    ctx = CaptureContext(project=project, home=home, redactor=Redactor(Rebaser(project, home)),
                          options=manifest.get("capture") or {})
     for f in ENV_FILES:
         ctx.ref(f, "env")
@@ -215,7 +219,7 @@ def capture(project: Path) -> dict:
                             "scope": "bundle", "sha256": sha256_bytes(p.read_bytes())})
 
     # 人工维护的上下文也登记进锁文件，这样改了意图或决策会产生新的快照
-    for rel in ("context/intent.md", "context/tasks.md"):
+    for rel in ("context/intent.md", "context/tasks.md", "context/claims.json"):
         _register_context(ctx, h / rel)
     for p in iter_files(h / "context/decisions"):
         _register_context(ctx, p)
@@ -232,6 +236,14 @@ def capture(project: Path) -> dict:
         "entries": sorted(ctx.entries, key=lambda e: e["path"]),
     }
     lock["snapshot"] = snapshot_id(lock)
+    # 来源：最近一次改变了内容的保存发生在哪。内容没变就沿用，免得换台机器保存一次就多一个提交
+    origin = {"platform": platform_name(), "machine": machine_id(home)}
+    lock["origin"] = previous.get("origin") if previous.get("snapshot") == lock["snapshot"] \
+        and previous.get("origin") else origin
+    resources = {r["name"]: extras.resource_fingerprint(project, r)
+                 for r in manifest.get("resources") or [] if r.get("name")}
+    if resources:
+        lock["resources"] = resources
 
     manifest["secrets"] = sorted(set(ctx.secrets) | set(manifest.get("extra_secrets") or [])
                                  | (set(manifest.get("secrets") or []) if len(captured) < len(kinds) else set()))
@@ -395,7 +407,7 @@ def materialize(project: Path, force: bool = False, dry_run: bool = False) -> li
             if not src.is_file():
                 actions.append(Action("skipped", str(dest), f"包里缺少 {e['path']}"))
                 continue
-            actions.append(place_file(src.read_bytes(), dest, force, dry_run))
+            actions.append(place_file(localize(src.read_bytes(), project, home), dest, force, dry_run))
         actions += adapter.materialize(project, home, lock, force, dry_run)
     # 跨 Agent：本机有、但包里没有它内容的 Agent，接收其他 Agent 的内容
     sources = [k for k in kinds if k in captured and k in adapters]
@@ -408,6 +420,9 @@ def materialize(project: Path, force: bool = False, dry_run: bool = False) -> li
             neutral.skills.update(n.skills)
             neutral.mcp.update(n.mcp)
             neutral.instructions += [i for i in n.instructions if i not in neutral.instructions]
+        neutral.skills = {k: localize(v, project, home) for k, v in neutral.skills.items()}
+        neutral.mcp = json.loads(localize(json.dumps(neutral.mcp, ensure_ascii=False).encode("utf-8"),
+                                          project, home).decode("utf-8"))
         actions += adapters[kind].adopt(project, home, neutral, force, dry_run)
     return actions
 
@@ -469,6 +484,8 @@ def doctor(project: Path) -> list:
         if kind in kinds or not any(k in here for k in kinds):
             checks += adapters[kind].doctor(project, home, manifest, lock)
 
+    checks += _doctor_world(project, home, manifest, lock)
+
     pending = [a for a in materialize(project, dry_run=True) if a.status != "same"]
     if pending:
         conflicts = sum(1 for a in pending if a.status == "conflict")
@@ -476,6 +493,39 @@ def doctor(project: Path) -> list:
                             "运行 hx load。"))
     else:
         checks.append(Check("ok", "包里的配置都已载入本机"))
+    return checks
+
+
+def _doctor_world(project: Path, home: Path, manifest: dict, lock: dict) -> list:
+    """包带不走的东西：这台机器是不是保存时那台、派生数据在不在、记忆里关于外部状态的说法还成不成立。"""
+    checks = []
+    origin = lock.get("origin") or {}
+    if origin.get("machine") and origin["machine"] != machine_id(home):
+        checks.append(Check("note", f"这份环境最近一次保存自另一台机器（{origin.get('platform') or '未知系统'}）",
+                            "会话摘要和记忆里关于那台机器、数据库或外部服务状态的说法，在这里不一定成立，"
+                            "使用前请让 Agent 重新核实。"))
+    declared = [r for r in manifest.get("resources") or [] if r.get("name") and r.get("path")]
+    for res in declared:
+        status = extras.resource_status(project, res)
+        label = f"可重建资源 {res['name']}（{res['path']}）"
+        if status == "ok":
+            checks.append(Check("ok", f"{label}已就绪"))
+        else:
+            what = "还没有生成" if status == "missing" else "比它的源文件旧"
+            checks.append(Check("warn", f"{label}{what}", f"在项目目录运行：{res.get('build')}"))
+    for path in extras.detect_vector_stores(project, declared):
+        checks.append(Check("note", f"发现疑似向量库或索引：{path}",
+                            "hx 不会打包它（体积大，而且向量可以被反推出原文）。"
+                            f"用 hx resource add 名字 --path {path} --build \"重建命令\" 登记重建方法。"))
+    for claim in extras.load_claims(project):
+        result = extras.check_claim(project, home, claim)
+        if result is True:
+            checks.append(Check("ok", f"记忆中的说法在本机成立：{claim['text']}"))
+        elif result is False:
+            checks.append(Check("warn", f"记忆中的说法在本机不成立：{claim['text']}",
+                                "Agent 的记忆依赖它。请补齐，或者告诉 Agent 这一条已经不成立。"))
+        else:
+            checks.append(Check("note", f"需要人工核实：{claim['text']}"))
     return checks
 
 
@@ -489,7 +539,7 @@ def export_bundle(project: Path, out: Path, include_transcripts: bool = False) -
     manifest, lock = load_manifest(project), load_lock(project)
     files = {p.relative_to(project).as_posix() for p in iter_files(harness_dir(project))}
     files |= {e["path"] for e in lock.get("entries", []) if (project / e["path"]).is_file()}
-    redactor = Redactor()
+    redactor = Redactor(Rebaser(project, home_dir()))
     n_transcripts = 0
     with tarfile.open(out, "w:gz") as tar:
         def add(name: str, data: bytes):
@@ -544,6 +594,7 @@ def import_bundle(bundle: Path, project: Path, force: bool = False,
         for (kind, name), data in transcripts.items():
             dest = adapters[kind]().transcript_dir(project, home_dir()) if kind in adapters else None
             if dest:
+                data = localize(data, project, home_dir())
                 restored += place_file(data, dest / name, force).status == "written"
     return {"meta": meta, "actions": actions, "transcripts_in_bundle": len(transcripts),
             "transcripts_restored": restored}
@@ -604,6 +655,81 @@ def git_busy(project: Path) -> bool:
                                            "CHERRY_PICK_HEAD", "REVERT_HEAD", "BISECT_LOG"))
 
 
+# harness 里哪些文件是生成出来的（冲突时重新生成即可），哪些是每人一份、互不相干的
+_DERIVED = (f"{HARNESS_DIR}/{LOCK}", f"{HARNESS_DIR}/context/HANDOFF.md")
+
+
+def _stage(project: Path, stage: int, path: str):
+    text = gitutil.show_file(project, f":{stage}", path)
+    if text is None:
+        return None
+    try:
+        return json.loads(text)
+    except ValueError:
+        return None
+
+
+def _union(a, b) -> list:
+    out = list(a or [])
+    return out + [x for x in (b or []) if x not in out]
+
+
+def resolve_conflicts(project: Path) -> dict:
+    """两个分支都保存过 Agent 环境，合并时 .harness/ 里会冲突。这里把能机械解决的都解决掉：
+
+      锁文件、交接简报     生成出来的，两边合并后交给随后的抓取重新生成
+      清单、外部状态声明    结构化数据，取两边的并集
+      会话摘要            同一个会话取结束时间更晚的那份
+      本机装了的 Agent 的目录  随后的抓取会用本机的内容重写
+
+    真正需要人判断的（意图、任务、决策、记忆、本机没装的 Agent 的文件）原样留给用户。
+    返回 {"auto": [...], "manual": [...]}。
+    """
+    out = gitutil.git(project, "diff", "--name-only", "--diff-filter=U", "-z", "--", HARNESS_DIR, check=False)
+    conflicted = [p for p in out.split("\0") if p]
+    result = {"auto": [], "manual": []}
+    if not conflicted:
+        return result
+    home = home_dir()
+    available = {n for n, cls in all_adapters().items() if cls().available(home)}
+    for path in conflicted:
+        ours, theirs = _stage(project, 2, path), _stage(project, 3, path)
+        full = project / path
+        if path == f"{HARNESS_DIR}/{MANIFEST}" and isinstance(ours, dict) and isinstance(theirs, dict):
+            merged = dict(ours)
+            for key in ("agents", "secrets", "extra_secrets"):
+                merged[key] = _union(ours.get(key), theirs.get(key))
+            names = {r.get("name") for r in ours.get("resources") or []}
+            merged["resources"] = (ours.get("resources") or []) + \
+                [r for r in theirs.get("resources") or [] if r.get("name") not in names]
+            if not merged["resources"]:
+                del merged["resources"]
+            write_json(full, merged)
+        elif path == f"{HARNESS_DIR}/{LOCK}" and isinstance(ours, dict) and isinstance(theirs, dict):
+            merged = dict(ours)
+            merged["agents"] = {**(theirs.get("agents") or {}), **(ours.get("agents") or {})}
+            seen = {e["path"] for e in ours.get("entries", [])}
+            merged["entries"] = ours.get("entries", []) + [e for e in theirs.get("entries", []) if e["path"] not in seen]
+            merged["snapshot"] = None
+            write_json(full, merged)
+        elif path == f"{HARNESS_DIR}/context/claims.json" and isinstance(ours, dict) and isinstance(theirs, dict):
+            ids = {c.get("id") for c in ours.get("claims") or []}
+            write_json(full, {"claims": (ours.get("claims") or []) +
+                              [c for c in theirs.get("claims") or [] if c.get("id") not in ids]})
+        elif path.startswith(f"{HARNESS_DIR}/context/sessions/") and isinstance(ours, dict) and isinstance(theirs, dict):
+            write_json(full, ours if (ours.get("ended") or "") >= (theirs.get("ended") or "") else theirs)
+        elif path in _DERIVED:
+            if full.exists():
+                full.unlink()      # 随后的抓取会重新生成
+        elif any(path.startswith(f"{HARNESS_DIR}/agent/{kind}/") for kind in available):
+            pass                   # 随后的抓取会用本机的内容重写这个目录
+        else:
+            result["manual"].append(path)
+            continue
+        result["auto"].append(path)
+    return result
+
+
 def save(project: Path, message: str | None = None, push: bool = False) -> dict:
     """一键保存：没初始化就初始化，抓取，能提交就提交。"""
     first = not (harness_dir(project) / MANIFEST).exists()
@@ -620,13 +746,17 @@ def save(project: Path, message: str | None = None, push: bool = False) -> dict:
             manifest.pop("agent", None)
             write_json(harness_dir(project) / MANIFEST, manifest)
     is_repo = gitutil.is_repo(project)
+    resolved = resolve_conflicts(project) if is_repo and not first else {"auto": [], "manual": []}
     previous = None
     if is_repo:
         rows = log(project)
         if rows:
             previous = lock_at(project, rows[0]["commit"])
     result = capture(project)
-    result.update(first=first, committed=False, pushed=False, reason=None)
+    result.update(first=first, committed=False, pushed=False, reason=None, resolved=resolved)
+    if resolved["auto"]:
+        # 自动解决的冲突标记为已解决；需要人工处理的留着不动
+        gitutil.git(project, "add", "--", *[p for p in resolved["auto"] if (project / p).exists()])
     if not is_repo:
         result["reason"] = "no-git"
         return result

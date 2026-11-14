@@ -16,3 +16,21 @@ allowed-tools: Bash
 ```
 "${CLAUDE_PLUGIN_ROOT}/bin/hx" team on
 ```
+
+保存前后还有三件事，按需要做：
+
+- **外部状态**：如果这次会话的工作依赖了项目之外的状态（数据库里的某些数据、远端服务的配置、本机装的某个工具、某个不在仓库里的文件），在保存之前把每一条记下来，接手的人和 Agent 才不会把它当成现成的事实：
+
+  ```
+  "${CLAUDE_PLUGIN_ROOT}/bin/hx" claim add "测试库里已经导入了 2024 年的订单样例" 
+  "${CLAUDE_PLUGIN_ROOT}/bin/hx" claim add "本机装了 ffmpeg" --command ffmpeg
+  "${CLAUDE_PLUGIN_ROOT}/bin/hx" claim add "模型权重已下载" --path models/weights.bin
+  ```
+
+- **向量库和索引**：如果项目里有本地向量库、检索索引这类由源文件生成的数据，不要让它进仓库，登记它的重建方法：
+
+  ```
+  "${CLAUDE_PLUGIN_ROOT}/bin/hx" resource add docs-index --path .rag/index --sources "docs/**/*.md" --build "python tools/build_index.py"
+  ```
+
+- **分享前检查**：用户要把项目推送或发给别人之前，运行 `"${CLAUDE_PLUGIN_ROOT}/bin/hx" audit`，把列出的内容用大白话告诉用户，由用户决定哪些需要隐去。名称类的（客户名、内部域名）用 `hx private add 真实的词 代称` 处理后重新保存。

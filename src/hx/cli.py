@@ -8,7 +8,7 @@ from pathlib import Path
 from . import __version__, core, gitutil
 from .util import HARNESS_DIR, HxError
 
-ICON = {"ok": "✓", "warn": "!", "fail": "✗",
+ICON = {"ok": "✓", "warn": "!", "fail": "✗", "note": "·",
         "written": "+", "same": "=", "conflict": "!", "skipped": "-"}
 
 
@@ -113,7 +113,8 @@ def cmd_doctor(args) -> int:
             print(f"    {c.hint}")
     fails = sum(c.level == "fail" for c in checks)
     warns = sum(c.level == "warn" for c in checks)
-    print(f"\n{fails} 个问题，{warns} 个提醒。")
+    notes = sum(c.level == "note" for c in checks)
+    print(f"\n{fails} 个问题，{warns} 个提醒" + (f"，{notes} 条说明" if notes else "") + "。")
     return 1 if fails else 0
 
 
@@ -178,8 +179,17 @@ def _save_report(r: dict, project: Path) -> None:
         print("已更新 .harness/，但仓库正在合并或变基中，这次没有提交。")
     else:
         print(f"没有新的变化（快照 {lock['snapshot']}）。")
-    if r.get("redactions") and r["redactions"] != "未发现密钥":
-        print(f"已自动隐藏密钥：{r['redactions']}")
+    resolved = r.get("resolved") or {}
+    if resolved.get("auto"):
+        print(f"已自动解决 .harness/ 里 {len(resolved['auto'])} 个文件的合并冲突。")
+    if resolved.get("manual"):
+        print("下面这些文件的合并冲突需要你来判断，解决后 git add 它们：")
+        for p in resolved["manual"]:
+            print(f"  {p}")
+    if resolved.get("auto") and not resolved.get("manual") and r["reason"] == "git-busy":
+        print("确认其他文件的冲突也已解决后，运行 git commit 完成合并。")
+    if r.get("redactions") and r["redactions"] != "未发现需要处理的内容":
+        print(f"已自动替换或隐藏：{r['redactions']}")
     if r.get("uncommitted"):
         print(f"提醒：这些文件还没有 git commit，别的机器拿不到最新内容：{', '.join(r['uncommitted'])}")
     if r["pushed"]:
@@ -225,7 +235,7 @@ def cmd_load(args) -> int:
     print(f"已载入：放置了 {n['written']} 项配置" + (f"，{n['conflict']} 项因本机已有不同版本而跳过（hx load --force 可覆盖）" if n["conflict"] else "") + "。")
     checks = core.doctor(project)
     problems = [c for c in checks if c.level == "fail"]
-    notes = [c for c in checks if c.level == "warn" and "快照之后改过" not in c.title]
+    notes = [c for c in checks if c.level in ("warn", "note") and "快照之后改过" not in c.title]
     if problems or notes:
         print("\n还需要你处理：")
         for c in problems + notes:
@@ -320,6 +330,108 @@ def cmd_home(args) -> int:
     return 0
 
 
+def cmd_private(args) -> int:
+    from . import portable
+    home = core.home_dir()
+    terms = portable.load_terms(home)
+    if args.action == "add":
+        if not args.term or not args.alias:
+            raise HxError("用法：hx private add 真实的词 代称")
+        portable.add_term(home, args.term, args.alias)
+        print(f"已登记。之后保存时，{args.term!r} 会写成 [[{args.alias}]]。对照表只存在本机：{portable.terms_file(home)}")
+        print("已经保存过的快照不会被改写；重新运行 hx save 才会生效。")
+    elif args.action == "remove":
+        if not args.term or args.term not in terms:
+            raise HxError("没有登记过这个词。用 hx private list 查看。")
+        del terms[args.term]
+        portable.save_terms(home, terms)
+        print("已移除。")
+    else:
+        if not terms:
+            print("还没有登记私有词。用法：hx private add 真实的词 代称")
+        for real, alias in sorted(terms.items()):
+            print(f"{real}  →  [[{alias}]]")
+    return 0
+
+
+def cmd_audit(args) -> int:
+    from . import portable
+    project = _project(args)
+    core.load_manifest(project)
+    findings = portable.audit(project)
+    if not findings:
+        print("没有发现需要人工确认的内容。这不等于绝对安全：写在句子里的业务信息，规则认不出来。")
+        return 0
+    by_kind: dict = {}
+    for rel, lineno, kind, snippet in findings:
+        by_kind.setdefault(kind, []).append((rel, lineno, snippet))
+    for kind, items in sorted(by_kind.items()):
+        print(f"[{kind}] {len(items)} 处")
+        for rel, lineno, snippet in items[: None if args.all else 10]:
+            print(f"  {rel}:{lineno}  {snippet}")
+        if not args.all and len(items) > 10:
+            print(f"  … 另有 {len(items) - 10} 处（hx audit --all 查看全部）")
+    print(f"\n共 {len(findings)} 处需要你看一眼。确实敏感的：")
+    print("  名称类（客户名、内部域名）→ hx private add 真实的词 代称，然后重新 hx save")
+    print("  其余 → 修改或删除对应文件后重新 hx save")
+    return 1
+
+
+def cmd_resource(args) -> int:
+    from . import extras
+    from .util import MANIFEST, write_json
+    project = _project(args)
+    manifest = core.load_manifest(project)
+    if args.action == "add":
+        res = extras.add_resource(manifest, args.name or "", args.path or "", args.sources or [], args.build or "",
+                                  args.note or "")
+        write_json(core.harness_dir(project) / MANIFEST, manifest)
+        print(f"已登记可重建资源 {res['name']}：{res['path']}。hx 不会打包它，载入时会提示用下面的命令重建：")
+        print(f"  {res['build']}")
+        if extras.is_ignored(project, res["path"]) is False:
+            print(f"提醒：{res['path']} 没有被 git 忽略，可能被提交进仓库。建议把它加进 .gitignore。")
+    elif args.action == "remove":
+        if not extras.remove_resource(manifest, args.name or ""):
+            raise HxError("没有这个名字的资源。用 hx resource list 查看。")
+        write_json(core.harness_dir(project) / MANIFEST, manifest)
+        print("已移除。")
+    else:
+        items = manifest.get("resources") or []
+        if not items:
+            print("还没有登记可重建资源。")
+            print("用法：hx resource add 名字 --path 产物路径 --sources \"docs/**/*.md\" --build \"重建命令\"")
+        status = {"ok": "已就绪", "missing": "还没有生成", "stale": "比源文件旧"}
+        for r in items:
+            print(f"{r['name']}  {r['path']}  [{status[extras.resource_status(project, r)]}]")
+            print(f"    重建：{r.get('build')}")
+    return 0
+
+
+def cmd_claim(args) -> int:
+    from . import extras
+    project = _project(args)
+    core.load_manifest(project)
+    if args.action == "add":
+        if not args.text:
+            raise HxError("用法：hx claim add \"说法\" [--path 路径 | --env 变量名 | --command 命令名]")
+        kind = "path" if args.path else "env" if args.env else "command" if args.command else None
+        claim = extras.add_claim(project, args.text, kind, args.path or args.env or args.command)
+        print(f"已记录（{claim['id']}）。载入时"
+              + ("会自动核对。" if kind else "会提醒接手的人核实。"))
+    elif args.action == "remove":
+        if not extras.remove_claim(project, args.text or ""):
+            raise HxError("没有这个编号的声明。用 hx claim list 查看。")
+        print("已移除。")
+    else:
+        claims = extras.load_claims(project)
+        if not claims:
+            print("还没有记录外部状态声明。")
+        marks = {True: "成立", False: "不成立", None: "需人工核实"}
+        for c in claims:
+            print(f"{c['id']}  [{marks[extras.check_claim(project, core.home_dir(), c)]}]  {c['text']}")
+    return 0
+
+
 def cmd_hook(args) -> int:
     hook = core.install_hook(_project(args))
     print(f"已安装 git 钩子：{hook}")
@@ -348,6 +460,34 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("auto", help="查看或开关自动保存")
     s.add_argument("state", nargs="?", choices=("on", "off"))
     s.set_defaults(func=cmd_auto)
+
+    s = sub.add_parser("audit", help="分享前检查：列出包里可能敏感、需要人看一眼的内容")
+    s.add_argument("--all", action="store_true", help="列出全部，不省略")
+    s.set_defaults(func=cmd_audit)
+
+    s = sub.add_parser("private", help="登记私有词（客户名、内部域名等），保存时自动换成代称")
+    s.add_argument("action", nargs="?", choices=("add", "list", "remove"), default="list")
+    s.add_argument("term", nargs="?", help="真实的词")
+    s.add_argument("alias", nargs="?", help="代称")
+    s.set_defaults(func=cmd_private)
+
+    s = sub.add_parser("resource", help="登记不随项目迁移、需要在本机重建的数据（向量库、索引等）")
+    s.add_argument("action", nargs="?", choices=("add", "list", "remove"), default="list")
+    s.add_argument("name", nargs="?")
+    s.add_argument("--path", help="产物在项目里的路径")
+    s.add_argument("--sources", action="append", help="源文件的通配符，可以写多次，如 docs/**/*.md")
+    s.add_argument("--build", help="重建命令")
+    s.add_argument("--note", help="补充说明，如所用的向量模型")
+    s.set_defaults(func=cmd_resource)
+
+    s = sub.add_parser("claim", help="记录 Agent 的工作所依赖的外部状态，载入时重新核对")
+    s.add_argument("action", nargs="?", choices=("add", "list", "remove"), default="list")
+    s.add_argument("text", nargs="?", help="说法（add）或编号（remove）")
+    g = s.add_mutually_exclusive_group()
+    g.add_argument("--path", help="核对方式：这个文件或目录存在")
+    g.add_argument("--env", help="核对方式：这个环境变量已设置")
+    g.add_argument("--command", help="核对方式：这个命令已安装")
+    s.set_defaults(func=cmd_claim)
 
     s = sub.add_parser("team", help="开关团队一键接入：同事打开项目时自动提示安装 hx")
     s.add_argument("state", nargs="?", choices=("on", "off"))

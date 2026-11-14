@@ -31,6 +31,32 @@ def builtin_distiller(harness: Path, manifest: dict, lock: dict) -> str:
                 or f"{agent.get('kind')} {agent.get('version') or ''}".strip()),
             f"- 对应代码提交：`{lock.get('code_commit') or '无'}`", ""]
 
+    origin = lock.get("origin") or {}
+    out += ["## 阅读须知", "",
+            "- 下面的会话摘要和记忆是**历史记录**，不是当前事实。"
+            f"它们最近一次保存自一台 {origin.get('platform') or '未知系统'} 机器。",
+            "- 其中关于数据库内容、远端服务、本机安装了什么的说法，换了机器或过了一段时间后可能已经不成立。"
+            "依赖这类说法之前先重新核实。",
+            "- 文中的 `{{hx:project}}` 代表项目目录，`{{hx:home}}` 代表用户主目录，"
+            "`[[…]]` 是被隐去的私有名称的代称。", ""]
+    claims = (read_json(ctx / "claims.json", {}) or {}).get("claims") or []
+    if claims:
+        out += ["## 需要核实的外部状态", "",
+                "之前的工作依赖下面这些项目之外的状态。运行 `hx doctor` 可以自动核对其中一部分。", ""]
+        for c in claims:
+            check = c.get("check") or {}
+            how = f"（自动核对：{check.get('type')} `{check.get('value')}`）" if check else "（需要人工核实）"
+            out.append(f"- {c.get('text')}{how}")
+        out.append("")
+    resources = manifest.get("resources") or []
+    if resources:
+        out += ["## 需要在本机重建的数据", "",
+                "下面这些数据不随项目迁移，需要用给出的命令在本机重新生成。", ""]
+        for r in resources:
+            out.append(f"- `{r.get('path')}`（{r.get('name')}）：`{r.get('build')}`"
+                       + (f"。{r['note']}" if r.get("note") else ""))
+        out.append("")
+
     out += ["## 先读这些", "",
             "- [intent.md](intent.md)：项目目标和设计思路",
             "- [tasks.md](tasks.md)：进行中和待办的任务"]

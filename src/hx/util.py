@@ -11,6 +11,11 @@ HARNESS_DIR = ".harness"
 MANIFEST = "harness.json"
 LOCK = "harness.lock.json"
 MAX_FILE_BYTES = 1_000_000  # 超过这个大小的文件不进包
+MAX_TREE_FILES = 2000       # 一个目录最多复制这么多文件，防止误把依赖目录、数据目录整个打进包
+MAX_TREE_BYTES = 50_000_000
+# 遍历目录时一律跳过：版本库、依赖、虚拟环境、缓存
+SKIP_DIRS = frozenset({".git", "__pycache__", "node_modules", ".venv", "venv", ".tox",
+                       ".mypy_cache", ".pytest_cache", ".ruff_cache"})
 
 
 class HxError(Exception):
@@ -77,7 +82,7 @@ def iter_files(root: Path):
     if not root.is_dir():
         return
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
-        dirnames[:] = sorted(d for d in dirnames if d not in (".git", "__pycache__", "node_modules"))
+        dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS)
         for name in sorted(filenames):
             p = Path(dirpath) / name
             if p.is_file():

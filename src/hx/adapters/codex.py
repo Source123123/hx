@@ -23,6 +23,7 @@ from collections import Counter
 from pathlib import Path
 
 from ..util import HARNESS_DIR, env_refs, path_key, read_json, relative_to_project, write_text
+from ..portable import read_packed_json
 from .base import Action, Adapter, CaptureContext, Check, Neutral, place_file
 
 A = "agent/codex"
@@ -127,7 +128,7 @@ class CodexAdapter(Adapter):
     # ---------- materialize / 跨 Agent ----------
 
     def materialize(self, project: Path, home: Path, lock: dict, force: bool, dry_run: bool = False) -> list:
-        packed = read_json(project / HARNESS_DIR / A / "mcp.json", {}) or {}
+        packed = read_packed_json(project / HARNESS_DIR / A / "mcp.json", project, home, {}) or {}
         return merge_mcp_toml(self.user_root(home) / "config.toml", packed.get("mcpServers") or {}, dry_run)
 
     def export_neutral(self, project: Path) -> Neutral:

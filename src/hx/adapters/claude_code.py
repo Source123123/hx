@@ -17,6 +17,7 @@ from collections import Counter
 from pathlib import Path
 
 from ..util import HARNESS_DIR, env_refs, read_json, relative_to_project, write_json, write_text
+from ..portable import localize, read_packed_json
 from .base import Action, Adapter, CaptureContext, Check, Neutral, place_file
 
 A = "agent/claude-code"          # 本 adapter 在 .harness/ 下的目录
@@ -234,14 +235,14 @@ class ClaudeCodeAdapter(Adapter):
     # ---------- materialize ----------
 
     def materialize(self, project: Path, home: Path, lock: dict, force: bool, dry_run: bool = False) -> list:
-        packed = read_json(project / HARNESS_DIR / A / "mcp.json", {}) or {}
+        packed = read_packed_json(project / HARNESS_DIR / A / "mcp.json", project, home, {}) or {}
         actions = merge_mcp_json(project, packed.get("mcpServers") or {}, dry_run)
         # 记忆放回 Claude Code 为"新路径下的这个项目"准备的目录
         src = project / HARNESS_DIR / "context/memory"
         dst = self._project_data(project, home) / "memory"
         if src.is_dir():
             for p in sorted(x for x in src.rglob("*") if x.is_file()):
-                actions.append(place_file(p.read_bytes(), dst / p.relative_to(src), force, dry_run))
+                actions.append(place_file(localize(p.read_bytes(), project, home), dst / p.relative_to(src), force, dry_run))
         return actions
 
     # ---------- 跨 Agent ----------
@@ -288,7 +289,7 @@ class ClaudeCodeAdapter(Adapter):
         # MCP 服务器需要的命令
         servers = {}
         for f in (project / ".mcp.json", project / HARNESS_DIR / A / "mcp.json"):
-            servers.update((read_json(f, {}) or {}).get("mcpServers") or {})
+            servers.update((read_packed_json(f, project, home, {}) or {}).get("mcpServers") or {})
         for name, spec in sorted(servers.items()):
             cmd = spec.get("command") if isinstance(spec, dict) else None
             if not cmd:

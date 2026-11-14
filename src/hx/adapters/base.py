@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..redact import Redactor
-from ..util import (HARNESS_DIR, MAX_FILE_BYTES, decode_text, iter_files, normalize_newlines,
+from ..util import (HARNESS_DIR, MAX_FILE_BYTES, MAX_TREE_BYTES, MAX_TREE_FILES, decode_text, iter_files, normalize_newlines,
                     sha256_bytes, write_text)
 
 # 锁文件条目的类别。adapter 可以用新的类别名，diff 会原样显示。
@@ -118,11 +118,15 @@ class CaptureContext:
 
     def put_tree(self, src: Path, dest: str, category: str, target_prefix: str | None = None,
                  exclude: tuple = ()) -> int:
-        n = 0
+        n = size = 0
         for p in iter_files(src):
             rel = p.relative_to(src).as_posix() if src.is_dir() else p.name
             if any(rel == e or rel.startswith(e + "/") for e in exclude):
                 continue
+            size += p.stat().st_size
+            if n >= MAX_TREE_FILES or size > MAX_TREE_BYTES:
+                self.skipped.append((dest, f"目录太大，只复制了前 {n} 个文件"))
+                break
             target = f"{target_prefix}/{rel}" if target_prefix else None
             n += self.put(f"{dest}/{rel}", p.read_bytes(), category, target)
         return n

@@ -578,6 +578,181 @@ class CompatibilityTest(Env, unittest.TestCase):
         self.assertEqual(r["lock"]["agents"]["claude-code"]["version"], "9.9.9")   # 版本信息仍然能拿到
 
 
+class DynamicStateTest(Env, unittest.TestCase):
+    """包带不走的东西：本机路径、私有名称、派生数据、外部状态，以及两个分支各自保存后的合并。"""
+
+    def skill(self, machine: Machine) -> Path:
+        return machine.claude / "skills/deploy/SKILL.md"
+
+    def clone_to(self, name: str) -> Path:
+        clone = self.root / "work" / name
+        sh(self.root, "git", "clone", "-q", str(self.project), str(clone))
+        sh(clone, "git", "config", "user.email", "t@example.com")
+        sh(clone, "git", "config", "user.name", "t")
+        return clone
+
+    def test_local_paths_are_rebased_between_machines(self):
+        self.skill(self.a).write_text(
+            f"run {self.project.as_posix()}/tools/x.sh\ncache {self.a.home.as_posix()}/.cache/x\n"
+            f"other {self.project.as_posix()}-backup stays\n", encoding="utf-8")
+        core.save(self.project)
+        packed = (self.project / ".harness/agent/claude-code/user/skills/deploy/SKILL.md").read_text(encoding="utf-8")
+        self.assertEqual(packed.splitlines()[:2], ["run {{hx:project}}/tools/x.sh", "cache {{hx:home}}/.cache/x"])
+        self.assertIn(f"{self.project.as_posix()}-backup", packed)        # 只是前缀相同的别的目录不动
+        packed_all = self.all_text(self.project / ".harness")
+        self.assertNotIn(self.a.home.as_posix(), packed_all.replace(f"{self.project.as_posix()}-backup", ""))
+        clone = self.clone_to("rebased")
+        self.b.use()
+        core.materialize(clone)
+        restored = self.skill(self.b).read_text(encoding="utf-8").splitlines()
+        self.assertEqual(restored[0], f"run {clone.as_posix()}/tools/x.sh")
+        self.assertEqual(restored[1], f"cache {self.b.home.as_posix()}/.cache/x")
+        # 在 B 上原样再保存：换回占位符后内容一样，不应产生新快照
+        before = core.load_lock(clone)["snapshot"]
+        (self.b.claude / "projects").mkdir(exist_ok=True)
+        r = core.capture(clone)
+        again = [e for e in r["lock"]["entries"] if e["path"].endswith("skills/deploy/SKILL.md")][0]
+        first = [e for e in core.lock_at(clone, "HEAD")["entries"] if e["path"].endswith("skills/deploy/SKILL.md")][0]
+        self.assertEqual(again["sha256"], first["sha256"], before)
+
+    def test_private_terms_become_aliases(self):
+        from hx import portable
+        portable.add_term(self.a.home, "ACME Corp", "客户A")
+        self.skill(self.a).write_text("Deploy for ACME Corp today.\n", encoding="utf-8")
+        core.save(self.project)
+        self.assertNotIn("ACME Corp", self.all_text(self.project / ".harness"))
+        self.assertEqual(list((self.project / ".harness").rglob("terms.json")), [])   # 对照表不进包
+        clone = self.clone_to("aliased")
+        self.b.use()                                  # B 没有对照表：看到代称，句子仍然通顺
+        core.materialize(clone)
+        self.assertEqual(self.skill(self.b).read_text(encoding="utf-8"), "Deploy for [[客户A]] today.\n")
+        portable.add_term(self.b.home, "ACME Corp", "客户A")       # B 拿到对照表后可以还原
+        core.materialize(clone, force=True)
+        self.assertEqual(self.skill(self.b).read_text(encoding="utf-8"), "Deploy for ACME Corp today.\n")
+        with self.assertRaises(HxError):
+            portable.add_term(self.b.home, "Other Inc", "客户A")   # 一个代称不能对应两个词
+
+    def test_audit_lists_what_rules_cannot_judge(self):
+        from hx import portable
+        self.skill(self.a).write_text(
+            "mail bob@corp-mail.example.org\nhost build01.acme.internal ip 10.20.30.40\n"
+            "phone 13812345678\nblob Zx9Qm2Lp7Vt4Kd8Rw1Yn6Bc3Hs5Jf0Ga\npath /Users/someoneelse/x\n"
+            "uuid 4273e7da-8f98-53e9-9f1c-cc8ef79f3582 sha 0123456789abcdef0123456789abcdef01234567\n",
+            encoding="utf-8")
+        core.save(self.project)
+        found = [f for f in portable.audit(self.project) if f[0].endswith("skills/deploy/SKILL.md")]
+        kinds = {f[2] for f in found}
+        self.assertEqual(kinds, {"邮箱", "内网域名", "IP 地址", "手机号", "像密钥的随机字符串", "其他人的主目录"})
+        self.assertFalse([f for f in found if f[1] == 6])           # 会话 ID 和哈希不算
+        self.assertNotIn("Zx9Qm2Lp7Vt4Kd8Rw1Yn6Bc3Hs5Jf0Ga", str(found))   # 报告里不完整显示疑似密钥
+
+    def test_rebuildable_resources_replace_vector_stores(self):
+        from hx import extras
+        core.save(self.project)
+        (self.project / "docs").mkdir()
+        (self.project / "docs/a.md").write_text("doc\n", encoding="utf-8")
+        (self.project / "rag/chroma_db").mkdir(parents=True)
+        (self.project / "rag/chroma_db/data.bin").write_bytes(b"\x00vectors")
+        (self.project / "idx.faiss").write_bytes(b"\x00")
+        manifest = core.load_manifest(self.project)
+        self.assertEqual(extras.detect_vector_stores(self.project, []), ["idx.faiss", "rag/chroma_db"])
+        notes = [c.title for c in core.doctor(self.project) if c.level == "note"]
+        self.assertTrue(any("rag/chroma_db" in t for t in notes), notes)
+        extras.add_resource(manifest, "docs-index", "rag/chroma_db", ["docs/**/*.md"], "python build.py")
+        (self.project / ".harness/harness.json").write_text(json.dumps(manifest), encoding="utf-8")
+        self.assertEqual(extras.detect_vector_stores(self.project, manifest["resources"]), ["idx.faiss"])
+        r = core.capture(self.project)
+        self.assertEqual(r["lock"]["resources"]["docs-index"]["sources"], 1)
+        self.assertNotIn("vectors", self.all_text(self.project / ".harness"))       # 数据本身不进包
+        self.assertEqual(extras.resource_status(self.project, manifest["resources"][0]), "ok")
+        future = (self.project / "rag/chroma_db/data.bin").stat().st_mtime + 100
+        os.utime(self.project / "docs/a.md", (future, future))                       # 源文件更新了
+        self.assertEqual(extras.resource_status(self.project, manifest["resources"][0]), "stale")
+        shutil.rmtree(self.project / "rag")
+        titles = [c.title for c in core.doctor(self.project) if c.level == "warn"]
+        self.assertTrue(any("docs-index" in t and "还没有生成" in t for t in titles), titles)
+        self.assertIn("python build.py", (self.project / ".harness/context/HANDOFF.md").read_text(encoding="utf-8"))
+        for bad in ("../outside", ".harness/x", str(self.root)):
+            with self.assertRaises(HxError):
+                extras.add_resource(manifest, "bad", bad, [], "x")
+
+    def test_claims_about_the_outside_world_are_rechecked(self):
+        from hx import extras
+        core.save(self.project)
+        (self.project / "models").mkdir()
+        (self.project / "models/w.bin").write_bytes(b"w")
+        extras.add_claim(self.project, "权重已下载", "path", "models/w.bin")
+        extras.add_claim(self.project, "装了 git", "command", "git")
+        extras.add_claim(self.project, "有部署密钥", "env", "HX_TEST_DEPLOY_KEY")
+        extras.add_claim(self.project, "测试库里有 ID 102 的订单")
+        extras.add_claim(self.project, "测试库里有 ID 102 的订单")                 # 重复添加不会多一条
+        self.assertEqual(len(extras.load_claims(self.project)), 4)
+        r = core.save(self.project)
+        self.assertTrue(r["committed"])                                           # 声明是快照的一部分
+        handoff = (self.project / ".harness/context/HANDOFF.md").read_text(encoding="utf-8")
+        self.assertIn("测试库里有 ID 102 的订单（需要人工核实）", handoff)
+        self.assertIn("历史记录", handoff)
+        clone = self.clone_to("claims")                # 新机器：models/ 没进仓库（这里模拟为不存在）
+        shutil.rmtree(clone / "models", ignore_errors=True)
+        self.b.use()
+        os.environ.pop("HX_TEST_DEPLOY_KEY", None)
+        by_title = {c.title: c.level for c in core.doctor(clone)}
+        self.assertEqual(by_title["记忆中的说法在本机成立：装了 git"], "ok")
+        self.assertEqual(by_title["记忆中的说法在本机不成立：有部署密钥"], "warn")
+        self.assertEqual(by_title["需要人工核实：测试库里有 ID 102 的订单"], "note")
+        self.assertTrue(any("另一台机器" in t for t in by_title), by_title)         # 来源提示
+
+    def test_origin_does_not_create_noise_commits(self):
+        core.save(self.project)
+        origin = core.load_lock(self.project)["origin"]
+        self.assertEqual(set(origin), {"platform", "machine"})
+        self.assertFalse(core.save(self.project)["committed"])
+
+    def test_branches_that_both_saved_merge_without_hand_editing(self):
+        from hx import extras
+        core.save(self.project)
+        sh(self.project, "git", "checkout", "-q", "-b", "feature")
+        self.skill(self.a).write_text("feature skill\n", encoding="utf-8")
+        extras.add_claim(self.project, "feature 分支的说法")
+        core.save(self.project)
+        sh(self.project, "git", "checkout", "-q", "main")
+        self.skill(self.a).write_text("main skill\n", encoding="utf-8")
+        extras.add_claim(self.project, "main 分支的说法")
+        (self.project / ".harness/context/intent.md").write_text("main intent\n", encoding="utf-8")
+        core.save(self.project)
+        merge = subprocess.run(["git", "merge", "feature"], cwd=self.project, capture_output=True)
+        self.assertNotEqual(merge.returncode, 0)                                   # 确实冲突了
+        r = core.save(self.project)
+        self.assertEqual((r["committed"], r["reason"]), (False, "git-busy"))
+        self.assertEqual(r["resolved"]["manual"], [])
+        self.assertIn(".harness/harness.lock.json", r["resolved"]["auto"])
+        left = subprocess.run(["git", "diff", "--name-only", "--diff-filter=U"], cwd=self.project,
+                              capture_output=True, text=True).stdout.strip()
+        self.assertEqual(left, "")                                                  # 没有剩下的冲突
+        self.assertEqual({c["text"] for c in extras.load_claims(self.project)},
+                         {"feature 分支的说法", "main 分支的说法"})                   # 两边的声明都在
+        for p in (self.project / ".harness").rglob("*"):
+            if p.is_file():
+                self.assertNotIn(b"<<<<<<<", p.read_bytes(), p)
+        sh(self.project, "git", "commit", "-qm", "merge")
+        self.assertFalse(core.save(self.project)["committed"])                      # 合并后的状态自洽
+
+    def test_dependency_and_cache_dirs_never_enter_the_package(self):
+        d = self.a.claude / "skills/deploy"
+        for junk in (".venv/lib/x.py", "node_modules/pkg/index.js", "__pycache__/a.pyc", ".git/config"):
+            (d / junk).parent.mkdir(parents=True, exist_ok=True)
+            (d / junk).write_text("junk\n", encoding="utf-8")
+        core.save(self.project)
+        packed = {p.relative_to(self.project).as_posix() for p in (self.project / ".harness").rglob("*") if p.is_file()}
+        self.assertFalse([p for p in packed if any(j in p for j in (".venv", "node_modules", "__pycache__", "/.git/"))])
+        # 导出的包不会把自己再包进去
+        out = self.project / "demo.hxb"
+        core.export_bundle(self.project, out)
+        core.export_bundle(self.project, out)
+        with tarfile.open(out) as tar:
+            self.assertFalse([m.name for m in tar.getmembers() if m.name.endswith(".hxb")])
+
+
 class RedactTest(unittest.TestCase):
     def test_rules(self):
         r = Redactor()

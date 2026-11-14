@@ -54,8 +54,9 @@ _load_plugins()
 class Redactor:
     """对文本做脱敏，并统计每条规则命中了多少次。"""
 
-    def __init__(self):
+    def __init__(self, rebaser=None):
         self.hits: Counter = Counter()
+        self.rebaser = rebaser      # hx.portable.Rebaser：把本机路径和私有词换成占位符
 
     def text(self, s: str) -> str:
         for name, pat in RULES:
@@ -72,9 +73,13 @@ class Redactor:
             q = m.group("q")
             return f"{m.group('key')}{m.group('sep')}{q}[REDACTED:named-secret]{q}"
 
-        return _ASSIGN.sub(assign, s)
+        s = _ASSIGN.sub(assign, s)
+        return self.rebaser.out(s) if self.rebaser else s
 
     def summary(self) -> str:
-        if not self.hits:
-            return "未发现密钥"
-        return "，".join(f"{k}×{v}" for k, v in sorted(self.hits.items()))
+        hits = Counter(self.hits)
+        if self.rebaser:
+            hits.update(self.rebaser.hits)
+        if not hits:
+            return "未发现需要处理的内容"
+        return "，".join(f"{k}×{v}" for k, v in sorted(hits.items()))
