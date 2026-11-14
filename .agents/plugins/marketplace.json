@@ -1,0 +1,12 @@
+{
+  "name": "hx",
+  "interface": { "displayName": "hx：保存和载入 Agent 环境" },
+  "plugins": [
+    {
+      "name": "hx",
+      "source": { "source": "local", "path": "./" },
+      "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" },
+      "category": "Productivity"
+    }
+  ]
+}

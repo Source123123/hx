@@ -25,7 +25,7 @@ import subprocess
 from collections import Counter
 from pathlib import Path
 
-from ..util import HARNESS_DIR, env_refs, path_key, read_json, relative_to_project, write_text
+from ..util import HARNESS_DIR, HxError, env_refs, path_key, read_json, relative_to_project, write_text
 from ..portable import localize, read_packed_json
 from .base import Action, Adapter, CaptureContext, Check, Neutral, place_file
 
@@ -140,7 +140,7 @@ class CodexAdapter(Adapter):
                                  encoding="utf-8", errors="replace").stdout
         except Exception:
             return None
-        m = re.search(r"\d+\.\d+\.\d+", out)
+        m = re.search(r"\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?", out)
         return m.group(0) if m else None
 
     # ---------- materialize / 跨 Agent ----------
@@ -248,6 +248,32 @@ class CodexAdapter(Adapter):
     def transcripts(self, project: Path, home: Path) -> list:
         return self._session_files(project, home)
 
+    def team_enabled(self, project: Path) -> bool:
+        config = parse_toml(_read(project / ".codex/config.toml"))
+        plugin = (config.get("plugins") or {}).get("hx@hx") or {}
+        market = (config.get("marketplaces") or {}).get("hx") or {}
+        return plugin.get("enabled") is True and market.get("source") == _hx_market_source()
+
+    def team_setup(self, project: Path, enable: bool) -> list:
+        """项目声明可信的 Git 市场；信任、插件安装和钩子审阅仍由 Codex 负责。"""
+        path = project / ".codex/config.toml"
+        text = _read(path)
+        config = parse_toml(text)
+        market = (config.get("marketplaces") or {}).get("hx") or {}
+        if market and market.get("source") != _hx_market_source():
+            raise HxError("项目已声明另一个名为 hx 的 Codex 插件市场，未覆盖；请先检查 .codex/config.toml。")
+        if not enable and not market and "hx@hx" not in (config.get("plugins") or {}):
+            return []
+        updated = text
+        if enable:
+            updated = set_toml_fields(updated, ("marketplaces", "hx"),
+                                      {"source_type": "git", "source": _hx_market_source()})
+        updated = set_toml_fields(updated, ("plugins", "hx@hx"), {"enabled": enable})
+        if updated == text:
+            return []
+        write_text(path, updated)
+        return [".codex/config.toml"]
+
 
 # ---------- MCP：Codex 写法 <-> 中立写法 ----------
 
@@ -298,6 +324,40 @@ def effective_mcp(user: dict, project: dict) -> dict:
             out[key] = merge(out[key], value) if isinstance(out.get(key), dict) and isinstance(value, dict) else value
         return out
     return merge(user.get("mcp_servers") or {}, project.get("mcp_servers") or {})
+
+
+def _hx_market_source() -> str:
+    repo = os.environ.get("HX_PLUGIN_REPO") or "Source123123/hx"
+    return repo if "://" in repo or repo.startswith("git@") else f"https://github.com/{repo}.git"
+
+
+def set_toml_fields(text: str, section: tuple, values: dict) -> str:
+    """仅修改指定表里的几个标量，保留其他设置和注释（不重写整份用户 TOML）。"""
+    lines = text.splitlines()
+    start = end = None
+    for index, line in enumerate(lines):
+        header = _HEADER.match(line)
+        if header:
+            if start is not None:
+                end = index
+                break
+            if tuple(_split_key(header.group(1))) == section:
+                start = index + 1
+    if start is None:
+        return text.rstrip() + ("\n\n" if text.strip() else "") + \
+            "[" + ".".join(_toml_key(k) for k in section) + "]\n" + \
+            "".join(f"{_toml_key(k)} = {_toml_value(v)}\n" for k, v in values.items())
+    end = len(lines) if end is None else end
+    pending = dict(values)
+    for index in range(start, end):
+        key, sep, _ = lines[index].partition("=")
+        key = key.strip().strip("\"'")
+        if sep and key in pending:
+            if _simple_value(lines[index].partition("=")[2]) != pending[key]:
+                lines[index] = f"{_toml_key(key)} = {_toml_value(pending[key])}"
+            pending.pop(key)
+    lines[end:end] = [f"{_toml_key(k)} = {_toml_value(v)}" for k, v in pending.items()]
+    return "\n".join(lines) + "\n"
 
 
 def neutral_to_codex(spec: dict) -> tuple:

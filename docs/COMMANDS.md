@@ -84,7 +84,9 @@ hx load [来源] [-y] [--force] [--dry-run]
 hx auto [on|off]
 ```
 
-自动保存由 Agent 的会话结束钩子触发，目前需要安装 Claude Code 插件。它只对已经保存过、且开关为开的项目生效。
+自动保存由 Claude Code 或 Codex 的 hx 插件会话结束钩子触发，只对已经保存过、且开关为开的项目生效。
+Codex 用户需先在 `/hooks` 审阅钩子。Codex 的结束钩子最长 3 秒，因此启动独立后台进程完成本地保存，
+结果写入本机 `~/.hx/logs/auto-save-*.log`。强制杀死进程不保证触发钩子，也不会自动推送。
 
 ### hx team
 
@@ -94,7 +96,11 @@ hx auto [on|off]
 hx team [on|off]
 ```
 
-开启后，hx 在项目的 Agent 配置中声明 hx 插件（对 Claude Code 是 `.claude/settings.json`）。同事打开项目并信任该目录时，会被提示安装插件。被修改的文件此前没有未提交改动时，hx 会将其单独提交。
+开启后，hx 在项目配置中声明 hx 插件：Claude Code 使用 `.claude/settings.json`；
+Codex 使用 `.codex/config.toml` 的 `[marketplaces.hx]` Git 来源和 `[plugins."hx@hx"] enabled = true`。
+Codex 必须先信任项目，安装或刷新由 Codex 处理，不保证弹出安装窗口；钩子仍需用户审阅。
+关闭 Codex 接入会把该项目的插件设为禁用，保留市场来源及其他设置。已有不同的 hx 市场不会被覆盖。
+被修改的文件此前没有未提交改动时，hx 会将其单独提交。
 
 ## 可搬运性与隐私
 
@@ -256,3 +262,24 @@ hx import <包文件> [--force] [--restore-transcripts]
 | `/hx:load` | 由 Agent 预览、征求同意、执行 `hx load`，说明待处理事项，并概括交接简报 |
 | 会话结束钩子 | 对已保存过且开启自动保存的项目执行保存 |
 | 会话开始钩子 | 提示 Agent 阅读交接简报；有配置尚未载入时提示用户。不写入任何文件 |
+
+## Codex 插件入口与钩子
+
+安装见 README。插件中的 `$hx:save` / `$hx:load` 对应 Claude Code 的 `/hx:save` / `/hx:load`。
+技能都通过插件自带启动器运行，不需要 pip。载入先预览；明确授权后才使用 `--yes`，不同文件默认不覆盖。
+项目技能的当前位置是 `.agents/skills`；保留 `.codex/skills` 的兼容内容。旧的 `~/.codex/prompts` 仍保存，但新入口不用它。
+个人 `AGENTS.md` 和优先级更高的 `AGENTS.override.md` 均可保存与还原。
+
+`hx auto-load` / `hx auto-save [--background]` 是钩子入口：
+
+- 优先从标准输入的 JSON 读取 `cwd`，兼容 Codex 和 Claude Code；缺省使用 `CLAUDE_PROJECT_DIR`，再使用 `-C` 或当前目录。
+- 从子目录启动时向上找当前 git 仓库里的 `.harness`，不跨越其他 git 项目。
+- `auto-load` 只报告，不写文件；`auto-save` 只对已管理且开启的项目本地提交 `.harness/`。
+- Codex Windows 钩子使用 PowerShell 调用 `bin/hx.cmd`；macOS/Linux 使用 `bin/hx`。
+- 普通 `codex exec` 在本轮版本中没有发出 `SessionStart`，交互式客户端的 `startup` 事件才会触发开始提示。
+
+项目级 MCP 的配置需要 Codex 信任项目才能生效。hx 保存用户层和项目层的有效配置，项目来源仍还原到项目。
+Codex 插件清单仅用于检查缺少、禁用或版本差异，不自动安装；生成记忆是用户级状态，不按项目复制。
+
+可重复运行的真实迁移检查：`python -X utf8 tests/manual_codex_e2e.py`。
+它需要已登录的 Codex 并消耗模型额度，使用临时目录验证保存、clone、载入、MCP 和技能，不改真实主目录配置。

@@ -1,0 +1,10 @@
+{
+  "name": "hx",
+  "version": "0.6.0",
+  "description": "保存和载入项目的 Agent 环境，换机器或换 Agent 时保留配置和工作进展。",
+  "author": { "name": "Source123123" },
+  "repository": "https://github.com/Source123123/hx",
+  "license": "MIT",
+  "skills": "./codex-skills/",
+  "hooks": "./hooks/codex.json"
+}

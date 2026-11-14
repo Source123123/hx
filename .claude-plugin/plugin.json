@@ -1,6 +1,6 @@
 {
   "name": "hx",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "保存和载入项目的 Agent 环境（配置、记忆、会话摘要），换机器或交接给同事时不丢上下文。",
   "author": { "name": "Source123123" },
   "repository": "https://github.com/Source123123/hx",

@@ -3,13 +3,20 @@ import json
 import tempfile
 import unittest
 import os
+import io
+import argparse
+import shutil
+import subprocess
+import time
 from pathlib import Path
 from unittest.mock import patch
 
 from hx.adapters.codex import CodexAdapter, digest_rollout, parse_toml, parse_toml_simple
 from hx.adapters.base import CaptureContext
 from hx.redact import Redactor
-from hx.util import write_text
+from hx.util import HxError, write_text
+from test_hx import Env, sh, codex_rollout
+from hx import core
 
 
 class RolloutTest(unittest.TestCase):
@@ -153,4 +160,91 @@ command = "python"
 env_http_headers = { Authorization = "TOKEN_NAME" }
 '''
         self.assertEqual(parse_toml_simple(text), parse_toml(text))
+
+    def test_team_preserves_other_settings(self):
+        path = self.project / ".codex/config.toml"
+        original = '# keep this comment\nmodel = "local"\n[mcp_servers.mine]\ncommand = "python"\n'
+        write_text(path, original)
+        self.assertEqual(self.adapter.team_setup(self.project, True), [".codex/config.toml"])
+        self.assertTrue(self.adapter.team_enabled(self.project))
+        self.assertTrue(path.read_text(encoding="utf-8").startswith(original))
+        self.assertEqual(self.adapter.team_setup(self.project, True), [])
+        self.adapter.team_setup(self.project, False)
+        self.assertFalse(self.adapter.team_enabled(self.project))
+        self.assertEqual(parse_toml(path.read_text(encoding="utf-8"))["mcp_servers"]["mine"], {"command": "python"})
+        self.assertEqual(self.adapter.team_setup(self.project, False), [])
+        write_text(path, '[marketplaces.hx]\nsource_type = "git"\nsource = "https://other.invalid/market.git"\n')
+        with self.assertRaises(HxError):
+            self.adapter.team_setup(self.project, True)
+
+
+class HookInputTest(unittest.TestCase):
+    def test_codex_stdin_claude_environment_and_subdirectory(self):
+        from hx.cli import _hook_project
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp).resolve()
+            write_text(project / ".harness/harness.json", "{}")
+            child = project / "sub"
+            child.mkdir()
+            args = argparse.Namespace(project=str(project / "wrong"))
+            with patch("sys.stdin", io.StringIO(json.dumps({"cwd": str(child)}))), \
+                    patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(project / "other")}):
+                self.assertEqual(_hook_project(args), project)
+            with patch("sys.stdin", io.StringIO("invalid input")), \
+                    patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(child)}):
+                self.assertEqual(_hook_project(args), project)
+
+
+class CodexHookFlowTest(Env, unittest.TestCase):
+    def test_declared_hooks_keep_start_read_only_and_save_only_harness(self):
+        core.save(self.project)
+        old_claude = (self.project / ".harness/agent/claude-code/user/CLAUDE.md").read_bytes()
+        self.b.claude.rmdir()  # 原本为空：模拟只有 Codex 的机器
+        cx = self.b.home / ".codex"
+        cx.mkdir()
+        self.b.use()
+        repo = Path(__file__).resolve().parents[1]
+        plugin = self.root / "plugin with spaces"
+        shutil.copytree(repo / "src", plugin / "src", ignore=shutil.ignore_patterns("__pycache__", "*.egg-info"))
+        shutil.copytree(repo / "bin", plugin / "bin")
+        config = json.loads((repo / "hooks/codex.json").read_text(encoding="utf-8"))["hooks"]
+        env = dict(os.environ, PLUGIN_ROOT=str(plugin), PYTHONUTF8="1")
+        env.pop("CLAUDE_PROJECT_DIR", None)
+        def invoke(event):
+            handler = config[event][0]["hooks"][0]
+            if os.name == "nt":
+                shell = shutil.which("pwsh") or shutil.which("powershell")
+                args = [shell, "-NoProfile", "-NonInteractive", "-Command", handler["commandWindows"]]
+            else:
+                args = ["sh", "-c", handler["command"]]
+            return subprocess.run(args, cwd=self.root, env=env, input=json.dumps({"cwd": str(self.project)}),
+                                  capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
+        before = {p.relative_to(self.b.home).as_posix(): p.read_bytes() for p in self.b.home.rglob("*") if p.is_file()}
+        result = invoke("SessionStart")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("HANDOFF.md", result.stdout)
+        after = {p.relative_to(self.b.home).as_posix(): p.read_bytes() for p in self.b.home.rglob("*") if p.is_file()}
+        self.assertEqual(before, after)
+        write_text(cx / "AGENTS.md", "new codex guidance\n")
+        write_text(cx / "sessions/2026/11/14/rollout-hook.jsonl",
+                   codex_rollout(self.project, "hook", "hook verification", "2026-11-14T00:00:00Z"))
+        write_text(self.project / "code.txt", "staged application work\n")
+        sh(self.project, "git", "add", "code.txt")
+        head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.project)
+        result = invoke("SessionEnd")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            if subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.project) != head:
+                break
+            time.sleep(0.1)
+        else:
+            logs = "\n".join(p.read_text(encoding="utf-8", errors="replace") for p in (self.b.home / ".hx/logs").glob("*"))
+            self.fail("后台未完成提交：" + result.stdout + result.stderr + logs)
+        paths = subprocess.check_output(["git", "show", "--pretty=", "--name-only", "HEAD"], cwd=self.project).decode().splitlines()
+        self.assertTrue(paths)
+        self.assertTrue(all(p.startswith(".harness/") for p in paths), paths)
+        staged = subprocess.check_output(["git", "diff", "--cached", "--name-only"], cwd=self.project).decode()
+        self.assertIn("code.txt", staged)
+        self.assertEqual((self.project / ".harness/agent/claude-code/user/CLAUDE.md").read_bytes(), old_claude)
 

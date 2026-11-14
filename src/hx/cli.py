@@ -197,7 +197,7 @@ def _save_report(r: dict, project: Path) -> None:
     elif r["committed"]:
         print("要分享给别人：git push（或 hx save --push），对方 clone 后运行 hx load。")
     if r["first"]:
-        print("团队协作：运行 hx team on，同事打开项目时会自动被提示安装 hx。")
+        print("团队协作：运行 hx team on，在项目里声明 hx 插件，方便同事接入。")
 
 
 def cmd_save(args) -> int:
@@ -253,7 +253,7 @@ def cmd_auto(args) -> int:
         manifest["auto_save"] = args.state == "on"
         from .util import MANIFEST, write_json
         write_json(core.harness_dir(project) / MANIFEST, manifest)
-    print(f"自动保存：{'开' if manifest.get('auto_save') else '关'}（由 Agent 的会话结束钩子触发，目前需要安装 Claude Code 插件）")
+    print(f"自动保存：{'开' if manifest.get('auto_save') else '关'}（由 Claude Code 或 Codex 的 hx 插件会话结束钩子触发；Codex 钩子需先在 /hooks 中信任）")
     return 0
 
 
@@ -267,7 +267,8 @@ def cmd_team(args) -> int:
         else:
             print(f"已修改 {', '.join(r['changed'])}，请把它 git commit 并 push。")
     if r["enabled"]:
-        print("同事 clone 项目、用 Claude Code 打开并信任这个目录后，会被提示安装 hx 插件；装好输入 /hx:load 即可。")
+        print("同事 clone 并信任项目后：Claude Code 会提示安装；Codex 可在项目插件市场找到 hx。")
+        print("Claude Code 使用 /hx:load；Codex 使用 $hx:load，并在 /hooks 中审阅钩子。")
         print("前提：同事的 GitHub 账号能访问 hx 插件所在的仓库。")
     elif not args.state:
         print("开启：hx team on")
@@ -275,8 +276,45 @@ def cmd_team(args) -> int:
 
 
 def _hook_project(args) -> Path:
+    import json
     import os
-    return Path(os.environ.get("CLAUDE_PROJECT_DIR") or args.project).resolve()
+    cwd = None
+    if not sys.stdin.isatty():
+        try:
+            event = json.loads(sys.stdin.read(1_000_000))
+            if isinstance(event, dict) and isinstance(event.get("cwd"), str):
+                cwd = event["cwd"] or None
+        except (ValueError, OSError):
+            pass
+    project = Path(cwd or os.environ.get("CLAUDE_PROJECT_DIR") or args.project).resolve()
+    # Codex 可从子目录启动；只向上找到当前 git 项目里的 harness。
+    for base in (project, *project.parents):
+        if (base / HARNESS_DIR / "harness.json").is_file():
+            return base
+        if (base / ".git").exists():
+            break
+    return project
+
+
+def _background_save(project: Path) -> None:
+    """Codex SessionEnd 最长 3 秒，入口通过启动器运行，保存由独立的本地进程完成。"""
+    import os
+    import subprocess
+    from .util import home_dir, sha256_bytes
+    log = home_dir() / ".hx/logs" / ("auto-save-" + sha256_bytes(str(project).encode("utf-8"))[:12] + ".log")
+    log.parent.mkdir(parents=True, exist_ok=True)
+    kwargs = {"cwd": str(project), "stdin": subprocess.DEVNULL,
+              "stdout": None, "stderr": subprocess.STDOUT}
+    worker_env = dict(os.environ)
+    worker_env.pop("CLAUDE_PROJECT_DIR", None)  # 使用已从当前事件解析出的 -C，不沿用其他会话的目录
+    kwargs["env"] = worker_env
+    if os.name == "nt":
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        kwargs["start_new_session"] = True
+    with log.open("ab") as output:
+        kwargs["stdout"] = output
+        subprocess.Popen([sys.executable, "-m", "hx", "-C", str(project), "auto-save"], **kwargs)
 
 
 def cmd_auto_save(args) -> int:
@@ -285,6 +323,9 @@ def cmd_auto_save(args) -> int:
         project = _hook_project(args)
         manifest = core.read_json(core.harness_dir(project) / "harness.json")
         if isinstance(manifest, dict) and manifest.get("auto_save"):
+            if getattr(args, "background", False):
+                _background_save(project)
+                return 0
             r = core.save(project)
             if r["committed"]:
                 print(f"hx：已自动保存 Agent 环境（快照 {r['lock']['snapshot']}）。")
@@ -303,7 +344,7 @@ def cmd_auto_load(args) -> int:
         pending = [a for a in core.materialize(project, dry_run=True) if a.status != "same"]
         print("hx：这个项目带有交接简报 .harness/context/HANDOFF.md，接手工作前请先阅读。")
         if pending:
-            print(f"hx：有 {len(pending)} 项 Agent 配置还没有载入本机。请告诉用户可以运行 /hx:load 来载入。")
+            print(f"hx：有 {len(pending)} 项 Agent 配置还没有载入本机。Claude Code 可用 /hx:load，Codex 可用 $hx:load；载入前请先确认。")
     except Exception as e:  # noqa: BLE001
         print(f"hx 检查失败：{e}", file=sys.stderr)
     return 0
@@ -489,12 +530,14 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--command", help="核对方式：这个命令已安装")
     s.set_defaults(func=cmd_claim)
 
-    s = sub.add_parser("team", help="开关团队一键接入：同事打开项目时自动提示安装 hx")
+    s = sub.add_parser("team", help="开关团队一键接入：在项目里声明 hx 插件")
     s.add_argument("state", nargs="?", choices=("on", "off"))
     s.set_defaults(func=cmd_team)
 
     for name, fn in (("auto-save", cmd_auto_save), ("auto-load", cmd_auto_load)):
         s = sub.add_parser(name)   # 给钩子用，不在帮助里显示
+        if name == "auto-save":
+            s.add_argument("--background", action="store_true", help="由后台进程完成本地保存，供限时钩子使用")
         s.set_defaults(func=fn)
 
     s = sub.add_parser("init", help="在项目里初始化 harness")

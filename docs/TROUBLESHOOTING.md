@@ -184,3 +184,13 @@ hx 0.4 起比较内容时忽略换行差异，不应出现该现象。如果仍�
 - 操作系统和 Python 版本
 - 所用的 Agent 及其版本
 - `hx doctor` 的完整输出（提交前检查其中是否有不便公开的路径或名称）
+
+## Codex 插件与自动保存
+
+- 找不到 `codex plugin`：升级 Codex，或用命令行方式安装 hx。
+- 安装后没有技能：重新打开会话，在 `/skills` 中找 hx 的 save/load，入口是 `$hx:save` 和 `$hx:load`。
+- 钩子没运行：先在 `/hooks` 审阅并信任；插件脚本更新后可能需要重新审阅。项目配置还要求项目被信任。
+- `codex exec` 没有开始提示：本轮版本没有发出 SessionStart；需要时显式运行 hx auto-load。
+- 结束后看不到新提交：后台保存稍等几秒，再检查 ~/.hx/logs/auto-save-*.log。项目须先保存过且 hx auto 为开；强制终止不保证触发。
+- 项目 MCP 没有出现在 `codex mcp list`：在项目根目录运行，并确认 Codex 已信任项目；用户级和项目级配置分开还原。
+- 插件清单缺失：`codex plugin list --json` 必须可用。hx 只记录名字、来源和版本，不自动安装插件，也不复制账号认证。

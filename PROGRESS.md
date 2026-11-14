@@ -40,7 +40,7 @@
 - 外部状态声明要靠人或 Agent 主动记录；Agent 是否会按 /hx:save 的提示去记，没有在真实会话里观察过。
 - 可重建资源的新旧判断用文件修改时间（和 make 一样），git 检出会刷新修改时间，可能把已是最新的产物报成"过期"。
 - 没有做真实的 MCP 连通性检查：体检只看命令是否存在，不启动 MCP 服务器。
-- Codex 没有"一键"体验（插件、钩子、团队接入）；Codex 的通用设置只留作参考、不还原。
+- Codex 的通用设置只留作参考、不还原；用户级生成记忆不按项目搬运。
 - 跨 Agent 转过去的技能和指令入口，没有在真实的 Agent 会话里确认"确实被用上了"。
 - 团队一键接入写入的 .claude/settings.json，没有在交互式会话里确认"同事打开项目时弹出安装提示"。
 - /hx:load 的多步交互流程没有在真实对话里跑过。
@@ -79,3 +79,16 @@
 - Codex 有用户级生成记忆（memories / memories_v2），官方没有安全的按项目抓取和还原约定；不把其他项目的全局记忆混入包。本机 memories 功能默认关闭，未开启后台生成。
 - 全部 41 项测试通过（含 Claude Code 和旧格式兼容）；新增项目 MCP、短密钥、技能、覆盖指令、插件和后备 TOML 解析测试。
 - 官方依据（2026-11-14）：https://learn.chatgpt.com/docs/build-skills 、https://learn.chatgpt.com/docs/custom-prompts 、https://learn.chatgpt.com/docs/agent-configuration/agents-md 、https://learn.chatgpt.com/docs/config-file/config-advanced 、https://learn.chatgpt.com/docs/customization/memories 。
+
+### 3. Codex 一键入口（0.6.0）
+- 本机实际 `codex plugin --help` 有 add/list/marketplace/remove；`features list` 显示 plugins、hooks 均为 stable/true（plugin_hooks 已 removed）。保留版本输出和真实行为，不使用已移除开关。
+- 新增 `.codex-plugin/plugin.json`、`.agents/plugins/marketplace.json`；隔离 CODEX_HOME 中实际 marketplace add → plugin add hx@hx → plugin list 成功。
+- Codex 技能使用独立的 codex-skills/，避免与 Claude 的 commands/ 重名。入口 `$hx:save` / `$hx:load`，通过 bin/hx 或 bin/hx.cmd 调用，无需 pip。技能校验通过。
+- `hooks/codex.json` 单独供 Codex 使用，未改变 Claude 的 hooks/hooks.json。Windows 实测钩子 shell 是 PowerShell，修正了 cmd 风格变量和调用语法。
+- 真实 Codex app-server 的原生 startup/SessionStart 和归档/SessionEnd 事件都已完成，开始事件将 HANDOFF 提示注入上下文，结束事件在约 2.1 秒返回，后台提交完成。测试只对隔离的自有插件临时跳过信任，不修改用户信任设置。
+- 本机 `codex exec` 不发 SessionStart；原生交互式客户端传入 startup 事件时会触发。强制杀进程不保证会话结束钩子执行。
+- 结束钩子最长 3 秒，使用 `auto-save --background`；后台结果保存在本机 ~/.hx/logs/auto-save-*.log。开始只报告，不还原，不写用户目录。
+- 项目目录优先取钩子标准输入 JSON 的 cwd，兼容 CLAUDE_PROJECT_DIR，并支持从项目子目录启动。
+- `team_setup` / `team_enabled` 使用当前官方支持的可信项目 `[marketplaces.hx]` 和 `[plugins."hx@hx"]`，保留其他设置，已有同名不同市场时报错而不覆盖。不承诺与 Claude 相同的安装弹窗，钩子仍须同事审阅。
+- README、COMMANDS、DESIGN、CHANGELOG 已更新。新增跨系统声明钩子测试（含带空格的插件目录）：开始时主目录完全不变；结束只提交 .harness/，保留已暂存的代码和未安装 Agent 的内容。9 项 Codex 专项测试通过；全部 44 项测试通过（Python 3.12、Windows 10 专业版 19045）。
+- 官方依据：https://developers.openai.com/plugins/build/plugins 、https://learn.chatgpt.com/docs/hooks 、https://learn.chatgpt.com/docs/config-file/config-reference 。

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hx-harness"
-version = "0.5.0"
+version = "0.6.0"
 description = "把 Agent 开发环境（配置 + 上下文）打包、版本化、迁移的工具"
 requires-python = ">=3.9"
 dependencies = []

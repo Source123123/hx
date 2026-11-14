@@ -1,0 +1,21 @@
+{
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [ {
+        "type": "command",
+        "command": "\"${PLUGIN_ROOT}/bin/hx\" auto-load",
+        "commandWindows": "& \"$env:PLUGIN_ROOT/bin/hx.cmd\" auto-load",
+        "timeout": 20,
+        "statusMessage": "检查项目里保存的环境"
+      } ] }
+    ],
+    "SessionEnd": [
+      { "hooks": [ {
+        "type": "command",
+        "command": "\"${PLUGIN_ROOT}/bin/hx\" auto-save --background",
+        "commandWindows": "& \"$env:PLUGIN_ROOT/bin/hx.cmd\" auto-save --background",
+        "timeout": 3
+      } ] }
+    ]
+  }
+}

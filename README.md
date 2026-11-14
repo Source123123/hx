@@ -57,7 +57,7 @@
 | Agent | 保存与载入 | 一键体验（插件、自动保存、团队接入） |
 |---|---|---|
 | Claude Code | 支持 | 支持 |
-| OpenAI Codex CLI | 支持 | 尚未提供，使用命令行 |
+| OpenAI Codex CLI | 支持（用户及项目级 MCP、技能、覆盖指令、插件体检） | 插件、技能、开始/结束钩子、项目声明；需支持 plugin/hooks 的版本并审阅钩子 |
 
 hx 识别的是 Agent 程序，而不是它背后的模型。在 Claude Code 或 Codex 中改用其他厂商的模型（例如 DeepSeek），hx 的行为不变。
 
@@ -93,7 +93,25 @@ hx 识别的是 Agent 程序，而不是它背后的模型。在 Claude Code 或
 
 插件自带启动器，不需要再用 pip 安装。
 
-**方式二：命令行**
+**方式二：Codex 插件**
+
+在 macOS、Linux、Git Bash、PowerShell 7 或 Windows 命令提示符里粘贴一行：
+
+```sh
+codex plugin marketplace add Source123123/hx && codex plugin add hx@hx
+```
+
+这是一次安装操作，里面是 Codex 官方要求的“添加市场”和“安装插件”两个命令。
+Windows 自带的旧 PowerShell 不支持 `&&`，请把这两个命令分两行运行。
+装好后重新打开 Codex，在 `/hooks` 中审阅并信任 hx 的两个钩子；插件更新后可能需要再次审阅。
+插件自带 `bin/hx` 和 `bin/hx.cmd`，无需 pip。需要已安装 Python 3.9+ 和 git。
+如果 `codex plugin --help` 不存在，请升级 Codex，或使用下面的命令行方式。
+
+本轮真实核对版本是 `codex-cli 0.167.0-alpha.4.1`；不保证其他版本的内部会话格式相同。
+官方依据：[插件](https://developers.openai.com/plugins/build/plugins)、[钩子](https://learn.chatgpt.com/docs/hooks)。
+含本地钩子的插件通过仓库分发，不能直接上架公开插件目录。
+
+**方式三：命令行**
 
 ```bash
 pip install git+https://github.com/Source123123/hx
@@ -111,6 +129,20 @@ pip install git+https://github.com/Source123123/hx
 | 让同事免安装接入 | 运行 `hx team on` 后推送；同事打开项目时会被提示安装插件 |
 
 `/hx:load` 会先列出将要放到本机的文件，经你同意后执行，然后说明还缺什么，并概括项目进展。
+
+### 使用 Codex 插件
+
+| 目的 | 操作 |
+|---|---|
+| 首次保存 | 输入 `$hx:save`，或从 `/skills` 选择 hx 的 save 技能 |
+| 之后保存 | 已保存的项目在会话结束后后台保存，通常不需操作；也可随时再次使用保存技能 |
+| 换机器接手 | clone 项目后输入 `$hx:load`，查看预览并确认 |
+| 团队接入 | 让 Agent 运行 `hx team on`；项目声明 hx 市场和插件，Codex 信任项目后发现它，钩子仍需同事审阅 |
+
+正常关闭/归档会话才会触发结束钩子，强制杀进程不能保证保存；后台结果见本机
+`~/.hx/logs/auto-save-*.log`。切换聊天不等于结束聊天。会话开始只提示阅读交接和载入，不写入配置。
+本机 `codex exec` 没有发出开始事件，自动化任务不要依赖它的开始提示，必要时显式执行 `hx auto-load`。
+团队接入采用 Codex 的原生配置机制，不承诺弹出与 Claude Code 相同的安装窗口。
 
 ### 使用命令行
 
