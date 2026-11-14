@@ -1,167 +1,225 @@
-# hx — 把 Agent 开发环境打包、版本化、迁移
+# hx
 
-用 Agent（目前支持 Claude Code 和 OpenAI Codex CLI）做项目时，真正决定产出的除了代码，还有 Agent 的配置和它积累的上下文：个人指令、skills、MCP 服务器、插件、记忆、聊过的内容。这些大多散落在你自己机器的主目录里，换一台机器或者交给同事就没了。
+[![tests](https://github.com/Source123123/hx/actions/workflows/test.yml/badge.svg)](https://github.com/Source123123/hx/actions/workflows/test.yml)
+![python](https://img.shields.io/badge/python-3.9%20%E2%80%93%203.14-blue)
+![platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
+![license](https://img.shields.io/badge/license-MIT-green)
 
-hx 把它们收进项目里的 `.harness/` 目录，用 git 记录每一次变化，并能在另一台机器上还原。
+**hx 把一个项目的 Agent 开发环境保存进项目本身，用 git 记录它的每一次变化，并能在另一台机器、另一种 Agent 上还原。**
 
-## 支持哪些 Agent
+用编程 Agent 做项目时，决定产出质量的除了代码，还有 Agent 的配置和它积累的上下文：个人指令、技能、MCP 服务器、插件、记忆、聊过的内容。这些大多散落在个人电脑的主目录里，换一台机器或交接给同事时就丢了。hx 把它们收进项目的 `.harness/` 目录，随代码一起版本化。
 
-| Agent | 保存 / 载入 | 一键（插件、自动保存） |
+## 目录
+
+- [功能](#功能)
+- [兼容性](#兼容性)
+- [安装](#安装)
+- [快速开始](#快速开始)
+- [工作原理](#工作原理)
+- [安全](#安全)
+- [已知限制](#已知限制)
+- [文档](#文档)
+- [版本策略](#版本策略)
+- [参与开发](#参与开发)
+- [许可证](#许可证)
+
+## 功能
+
+| 功能 | 说明 |
+|---|---|
+| 保存 | 一条命令抓取 Agent 的配置和上下文，提交为一个快照 |
+| 载入 | 在新机器上还原配置，并检查缺少的环境变量、工具和插件 |
+| 历史 | 快照就是 git 提交，可以查看、比较、回退；代码提交可以标记它产生时所用的快照 |
+| 多 Agent | 同一个项目可以同时登记 Claude Code 和 Codex，各自保存互不覆盖 |
+| 跨 Agent | 用一种 Agent 保存的项目，可以在只装了另一种 Agent 的机器上载入 |
+| 团队交接 | 会话摘要全团队累积，自动生成交接简报 |
+| 密钥保护 | 密钥不进包，只登记环境变量名；文本经过脱敏规则 |
+| 离线分发 | 没有共享仓库时，导出为单个包文件传递 |
+| 可扩展 | 新的 Agent、脱敏规则、提炼器通过插件接口接入 |
+
+## 兼容性
+
+以下组合在每次代码变更时由自动测试验证。
+
+| 维度 | 支持范围 |
+|---|---|
+| 操作系统 | Windows 10 / 11、macOS、Linux |
+| Python | 3.9、3.10、3.11、3.12、3.13、3.14 |
+| git | 2.22 及以上 |
+| 运行依赖 | 无（仅使用 Python 标准库） |
+
+| Agent | 保存与载入 | 一键体验（插件、自动保存、团队接入） |
 |---|---|---|
 | Claude Code | 支持 | 支持 |
-| OpenAI Codex CLI | 支持（命令行 `hx save` / `hx load`） | 还没有 |
-| 在 Claude Code 或 Codex 里换用别家模型（如 DeepSeek） | 支持，和上面一样 | 同上 |
+| OpenAI Codex CLI | 支持 | 尚未提供，使用命令行 |
 
-hx 认的是 Agent 程序，不是背后的模型。
+hx 识别的是 Agent 程序，而不是它背后的模型。在 Claude Code 或 Codex 中改用其他厂商的模型（例如 DeepSeek），hx 的行为不变。
 
-**可以混用。** 一个项目可以同时登记多个 Agent：同事 A 用 Claude Code、同事 B 用 Codex，各自 `hx save`，谁的内容都不会被对方覆盖，会话摘要合在同一份交接简报里。如果项目是用另一种 Agent 保存的，`hx load` 会把能通用的部分转过来：
+各项的验证程度和尚未验证的部分见 [PROGRESS.md](PROGRESS.md)。
 
-- 技能（两边都是 `SKILL.md` 格式）直接复制。
-- MCP 服务器在 `.mcp.json` 和 Codex 的 `config.toml` 之间转换，密钥保持用环境变量传入。
-- 指令文件不复制内容，只生成一个指向原文件的入口（`CLAUDE.md` 里引用 `AGENTS.md`，或反过来），避免两份内容不一致。
-- 权限、钩子、插件这类各家不通用的设置不转换。
+## 安装
 
-## 支持哪些操作系统
+**前置条件**
 
-Windows 10、Windows 11、macOS、Linux 都支持，也可以跨系统迁移（比如在 Mac 上保存，在 Windows 上载入）。每次改动都会在这三类系统上自动跑一遍测试。
-
-| 系统 | 需要先装好 |
+| 系统 | 需要先安装 |
 |---|---|
 | Windows 10 / 11 | [Python](https://www.python.org/downloads/)（安装时勾选 "Add python.exe to PATH"）和 [Git for Windows](https://git-scm.com/download/win) |
 | macOS | 在终端运行一次 `xcode-select --install`，它会装好 git 和 Python |
-| Linux | 用系统的软件包管理器安装 `git` 和 `python3`（多数发行版已自带） |
+| Linux | 用系统的软件包管理器安装 `git` 和 `python3` |
 
-跨系统时 hx 替你处理的事：
+**方式一：Claude Code 插件（推荐）**
 
-- **换行符**：Windows 和 Mac/Linux 的换行不同，hx 比较内容时会忽略这一点，不会把只有换行不同的文件当成"改过"。
-- **路径**：包里只存相对路径；会话摘要里"改了哪些文件"在三类系统上写法一致。
-- **中文**：所有文件用 UTF-8 保存，Windows 上输出不会乱码。
-
-需要你自己处理的事：
-
-- **环境变量**在每台机器上各设一次，`hx load` 会按你的系统告诉你具体怎么设。
-- MCP 服务器如果配置的是某台机器上的**绝对路径**（比如 `/usr/local/bin/某工具`），换系统后找不到，`hx load` 会指出来，需要在新机器上装好对应工具。
-
-## 最简单的用法：装成 Claude Code 插件
-
-需要电脑上有 Python 3.9 以上和 git。在 Claude Code 里输入一次：
+在 Claude Code 中输入：
 
 ```
 /plugin install hx --marketplace Source123123/hx
 ```
 
-装好之后：
+如果你的 Claude Code 版本较旧、不认识上面的写法，改用两步：
 
-| 你想做的事 | 怎么做 |
-|---|---|
-| 保存这个项目的 Agent 环境 | 什么都不用做，会话结束时自动保存。想立刻保存就输入 `/hx:save` |
-| 在新机器上接手项目 | 把项目 clone 下来，在 Claude Code 里输入 `/hx:load` |
-| 关掉自动保存 | 对 Claude 说"关掉 hx 自动保存"，或运行 `hx auto off` |
-
-### 团队一键接入
-
-想让同事连安装命令都不用输，在项目里开启一次（或者第一次 `/hx:save` 时 Claude 会问你）：
-
-```bash
-hx team on
+```
+/plugin marketplace add Source123123/hx
 ```
 
-它会在项目的 `.claude/settings.json` 里声明 hx 插件并提交。你 `git push` 之后，同事 clone 项目、用 Claude Code 打开并信任这个目录时，会被提示安装 hx；装好输入 `/hx:load` 就接上了。前提是同事的 GitHub 账号能访问 hx 所在的仓库。关闭用 `hx team off`。
+```
+/plugin install hx@hx
+```
 
-说明：
+插件自带启动器，不需要再用 pip 安装。
 
-- 第一次需要手动 `/hx:save` 一次，之后这个项目才会自动保存。没有保存过的项目，插件不会碰。
-- 自动保存只在本地做一次 git 提交，而且只提交 `.harness/` 目录，不会推送，也不会动你的其他文件。
-- `/hx:load` 会先列出要放到本机的文件，等你同意再执行。之后 Claude 会告诉你还缺什么（比如某个环境变量），并概括项目进展。
-- 打开一个带 `.harness/` 的项目时，Claude 会被提示先读交接简报。
-
-## 不用插件：命令行
+**方式二：命令行**
 
 ```bash
 pip install git+https://github.com/Source123123/hx
 ```
 
-日常只需要两条命令。保存：
+## 快速开始
+
+### 使用 Claude Code 插件
+
+| 目的 | 操作 |
+|---|---|
+| 首次保存 | 输入 `/hx:save` |
+| 之后的保存 | 无需操作，会话结束时自动保存 |
+| 在新机器上接手 | clone 项目后输入 `/hx:load` |
+| 让同事免安装接入 | 运行 `hx team on` 后推送；同事打开项目时会被提示安装插件 |
+
+`/hx:load` 会先列出将要放到本机的文件，经你同意后执行，然后说明还缺什么，并概括项目进展。
+
+### 使用命令行
+
+保存当前项目的 Agent 环境：
 
 ```bash
 hx save
 ```
 
-载入（可以直接给 git 地址或 `.hxb` 包文件，会自动下载）：
+在另一台机器上载入（来源可以是 git 地址、本地目录或包文件）：
 
 ```bash
-hx load https://github.com/你/你的项目
+hx load https://github.com/你的账号/你的项目
 ```
 
-不带任何参数运行 `hx`，它会告诉你当前状态和下一步该做什么。
+不带参数运行 `hx`，会显示当前状态和下一步建议。
 
-没有共享的 git 仓库时，用 `hx export` 导出一个 `.hxb` 文件发给对方，对方 `hx load 文件.hxb`。
+没有共享仓库时，导出为单个文件：
 
-## 全部命令
-
-| 命令 | 作用 |
-|---|---|
-| `hx save` | **常用。** 一键保存：需要时自动初始化，抓取并提交。`--push` 同时推送 |
-| `hx load [来源]` | **常用。** 一键载入：还原配置并检查环境 |
-| `hx auto on/off` | 开关自动保存 |
-| `hx team on/off` | 开关团队一键接入 |
-| `hx log` | 快照历史。`--all` 同时列出带快照标记的代码提交 |
-| `hx diff [A] [B]` | 比较两个快照；不带参数时比较最近的快照和当前状态 |
-| `hx restore <快照>` | 把 `.harness/` 恢复到历史快照 |
-| `hx export` / `hx import` | 导出、导入单个包文件 |
-| `hx hook` | 安装 git 钩子，让每个代码提交都带上当时的快照 ID |
-| `hx init` / `capture` / `snapshot` / `doctor` / `materialize` | `save` 和 `load` 的分解步骤，需要精细控制时用 |
-
-## 包里有什么
-
-```
-.harness/
-  harness.json          清单：Agent 类型、需要哪些环境变量
-  harness.lock.json     锁文件：每个文件的哈希、Agent 版本、模型、对应的代码提交
-  agent/claude-code/    从 ~/.claude 复制来的个人指令、设置、skills、agents、MCP、插件清单
-  agent/codex/          从 ~/.codex 复制来的个人指令、skills、提示词、MCP
-  context/
-    intent.md           项目目标和设计思路 —— 你来写
-    tasks.md            进行中和待办 —— 你来写
-    decisions/          决策记录 —— 你来写
-    memory/             Agent 的记忆
-    sessions/           每次会话的摘要：提了什么要求、改了哪些文件、最后的答复（全团队累积，保留最近 30 个）
-    HANDOFF.md          自动生成的交接简报
+```bash
+hx export -o 项目.hxb
 ```
 
-项目里已有的文件（`CLAUDE.md`、`.claude/`、`.mcp.json`）不会被复制，只在锁文件里记录哈希。
+对方执行：
 
-要让接手的 Agent 自动读到交接简报，在项目的 `CLAUDE.md` 里加一行：
-
-```
-@.harness/context/HANDOFF.md
+```bash
+hx load 项目.hxb
 ```
 
-## 关于密钥
+完整的命令和选项见 [docs/COMMANDS.md](docs/COMMANDS.md)。
 
-- 密钥不进包。MCP 配置里的密钥值会换成 `${名字}`，settings 里的密钥条目会被删掉，名字登记在 `harness.json` 里，由目标机器的环境变量提供。
-- 所有复制进包的文本都会过一遍脱敏规则（常见的 API key、token、私钥、带密码的 URL）。
-- **脱敏是基于规则的，不保证没有遗漏。** 会话摘要里有你对 Agent 说过的话。把仓库或包文件分享给团队之外的人之前，请自己看一遍 `.harness/`。
-- 载入会把项目带来的设置、技能放进你的 `~/.claude/`，其中可能有会自动执行命令的内容。**只载入你信任的项目。** 载入前会列出文件并要求确认；本机已有的不同文件不会被覆盖。
-- 原始对话记录默认不导出，`hx export --include-transcripts` 才会带上。
+## 工作原理
 
-## 做不到的事
+```
+机器 A                                            机器 B
+┌──────────────────────────┐                     ┌──────────────────────────┐
+│ ~/.claude  ~/.codex      │                     │ ~/.claude  ~/.codex      │
+│ 个人指令、技能、MCP、记忆 │                     │                          │
+│ 会话记录                 │                     │                          │
+└────────────┬─────────────┘                     └────────────▲─────────────┘
+             │ hx save                                        │ hx load
+             │ 复制、脱敏、提炼                                 │ 确认、还原、体检
+┌────────────▼─────────────┐   git push / .hxb   ┌────────────┴─────────────┐
+│ 项目/.harness/           │ ──────────────────▶ │ 项目/.harness/           │
+│ 配置 + 上下文 + 锁文件    │                     │                          │
+└──────────────────────────┘                     └──────────────────────────┘
+```
 
-- 不保证 Agent 在新机器上做出同样的结果。模型有随机性，hx 保证的是配置和上下文一致。
-- 不安装系统依赖。请用 Dev Container、Nix 或 Docker，hx 会记录这些文件的哈希。
-- 不自动安装项目用到的其他插件，载入时会告诉你缺哪些。
-- ChatGPT 网页版或 App 里的对话不在本机，hx 打包不了。
-- Codex 的通用设置（`config.toml` 里 MCP 以外的部分）只保存作参考，不会自动还原。
-- 接入其他 Agent 见 [docs/EXTENDING.md](docs/EXTENDING.md)。
+- **项目内已有的文件**（`CLAUDE.md`、`AGENTS.md`、`.claude/`、`.mcp.json`）只在锁文件中记录哈希，不复制。
+- **项目外的文件**（主目录下的个人配置、记忆、会话）复制进 `.harness/`，复制时脱敏。
+- **会话记录**不整份保存，而是提炼为摘要：用户提出的要求、改动的文件、最后的答复。
+- **快照**是一次只包含 `.harness/` 的 git 提交，快照 ID 由内容算出，与机器和操作系统无关。
+
+`.harness/` 的目录结构和文件格式见 [docs/FORMAT.md](docs/FORMAT.md)，设计取舍见 [docs/DESIGN.md](docs/DESIGN.md)。
+
+## 安全
+
+hx 的默认行为按"包可能被团队以外的人看到"来设计。
+
+- **密钥不进包。** 配置中的密钥值被替换为环境变量引用，名字登记在清单里，由目标机器提供。
+- **文本脱敏。** 所有复制进包的文本经过规则匹配，覆盖常见的 API 密钥、令牌、私钥和带密码的地址。
+- **载入需要确认。** 载入会把项目带来的设置写入你的主目录，其中可能包含会自动执行的命令。hx 不会在打开项目时自动载入，而是列出文件并等待确认。
+- **不覆盖已有文件。** 本机已有的不同文件默认保留，强制覆盖时先备份。
+- **不自动推送。** 自动保存只做本地提交，且只提交 `.harness/`。
+- **原始对话默认不导出。**
+
+脱敏基于规则，**不能保证没有遗漏**。会话摘要包含你对 Agent 说过的原话。把仓库或包文件分享到团队之外前，请人工检查 `.harness/`。完整的安全模型和漏洞报告方式见 [SECURITY.md](SECURITY.md)。
+
+## 已知限制
+
+- hx 保证配置和上下文一致，不保证 Agent 在新机器上做出相同的结果，因为模型输出本身有随机性。
+- hx 不安装系统依赖。请使用 Dev Container、Nix 或 Docker；hx 会记录这些文件的哈希。
+- hx 不自动安装项目用到的其他插件，载入时会列出缺少的项。
+- 权限、钩子、插件等各 Agent 不通用的设置不做跨 Agent 转换。
+- Codex 的通用设置（`config.toml` 中 MCP 以外的部分）仅保存作参考，不自动还原。
+- ChatGPT 网页版或 App 中的对话不在本机，无法打包。
+- 同一种 Agent 的个人配置以最后保存的人为准。建议先载入再工作。
 
 ## 文档
 
-- [docs/DESIGN.md](docs/DESIGN.md)：总体设计
-- [docs/EXTENDING.md](docs/EXTENDING.md)：如何扩展
-- [PROGRESS.md](PROGRESS.md)：开发进度
+| 文档 | 内容 |
+|---|---|
+| [docs/COMMANDS.md](docs/COMMANDS.md) | 命令参考：全部命令、选项、退出码、环境变量 |
+| [docs/FORMAT.md](docs/FORMAT.md) | 格式规范：目录结构、清单、锁文件、提交标记、包文件 |
+| [docs/DESIGN.md](docs/DESIGN.md) | 设计说明：分层模型、多 Agent、跨系统、取舍 |
+| [docs/EXTENDING.md](docs/EXTENDING.md) | 扩展指南：接入新的 Agent、脱敏规则、提炼器 |
+| [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | 常见问题与排查 |
+| [SECURITY.md](SECURITY.md) | 安全模型与漏洞报告 |
+| [CHANGELOG.md](CHANGELOG.md) | 版本变更记录 |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | 开发环境、测试、提交规范 |
+| [PROGRESS.md](PROGRESS.md) | 开发进度、验证状态、路线图 |
 
-## 开发
+## 版本策略
+
+- 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。1.0 之前，次版本号的变化可能包含不兼容改动，并会在变更记录中标明。
+- **向后兼容**：新版 hx 可以读取旧版保存的包，再次保存时自动升级为新格式。
+- **向前保护**：旧版 hx 遇到新格式的包会拒绝读取并提示升级，不会按错误的理解去还原。
+- Python 版本的支持范围跟随上表。已停止维护的 Python 版本会保留到主流操作系统不再预装它为止。
+
+## 参与开发
 
 ```bash
-python -m unittest discover -s tests
+git clone https://github.com/Source123123/hx
 ```
+
+```bash
+pip install -e ./hx
+```
+
+```bash
+python -m unittest discover -s hx/tests
+```
+
+开发约定见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+
+## 许可证
+
+[MIT](LICENSE)

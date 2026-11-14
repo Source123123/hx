@@ -528,7 +528,9 @@ class CompatibilityTest(Env, unittest.TestCase):
         self.b.use()
         core.materialize(clone)
         self.assertEqual((self.b.claude / "skills/deploy/SKILL.md").read_text(encoding="utf-8"), "deploy\n")
-        self.assertNotIn("fail", [c.level for c in core.doctor(clone) if "环境变量" not in c.title])
+        # 环境变量没设置、测试机没装 Agent 都会被体检报出来，与格式兼容无关，这里排除
+        unrelated = ("环境变量", "没有找到 claude", "没有找到 codex")
+        self.assertNotIn("fail", [c.level for c in core.doctor(clone) if not any(u in c.title for u in unrelated)])
         # 再保存一次会自动升级成新格式，原有内容不丢
         r = core.save(clone)
         self.assertEqual(r["lock"]["lockVersion"], core.LOCK_VERSION)
