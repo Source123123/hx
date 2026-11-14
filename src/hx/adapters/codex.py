@@ -5,12 +5,13 @@
   项目外（复制）：~/.codex/ 下的个人指令 AGENTS.md、技能、自定义提示词、config.toml（去掉 MCP 和本机路径后留作参考），
                 config.toml 里的 MCP 服务器，本项目的会话记录（提炼成摘要）
 
-格式核对情况（对照 codex-cli 0.169.0 的真实文件）：
+格式核对情况（2026-11-14，对照本机 codex-cli 0.167.0-alpha.4.1 完整会话）：
   已核对：CODEX_HOME、config.toml 的 [mcp_servers.*] 写法（command/args/env/env_vars/url/
           bearer_token_env_var/env_http_headers/http_headers）、skills/.system 是内置技能、
           会话文件 sessions/年/月/日/rollout-*.jsonl 的 session_meta、用户消息、turn_context。
-  未核对：助手回复和工具调用在会话文件里的样子（写这段代码的机器连不上 OpenAI，产生不了完整会话）。
-          见 digest_rollout 里的注释。
+  已核对：助手 output_text、phase=final_answer；custom_tool_call/exec 包含转义的
+          tools.apply_patch 补丁；用户消息的来源标记。裁短的真实记录见 tests/fixtures/。
+  兼容但未在本机产生：旧版直接调用 function_call、custom_tool_call/apply_patch、local_shell_call。
 """
 from __future__ import annotations
 
@@ -403,7 +404,31 @@ def parse_toml_simple(text: str) -> dict:
 
 # ---------- 会话摘要 ----------
 
-_PATCH_FILE = re.compile(r"\*\*\* (?:Update|Add|Delete) File: (.+)")
+_PATCH_FILE = re.compile(r"^\*\*\* (?:(?:Update|Add|Delete) File|Move to): (.+)$", re.M)
+_JS_PATCH = re.compile(r'\btools\.apply_patch\s*\(\s*("(?:[^"\\]|\\.)*")')
+
+
+def _patch_texts(payload: dict) -> list:
+    """只读补丁，不执行会话中的代码。code mode 把补丁包在 JSON 兼容的 JS 字符串里。"""
+    texts = _strings(payload.get("input")) + _strings(_maybe_json(payload.get("arguments")))
+    if payload.get("name", "").rsplit(".", 1)[-1] == "apply_patch":
+        return texts
+    if payload.get("name", "").rsplit(".", 1)[-1] == "exec":
+        return [value for text in texts for literal in _JS_PATCH.findall(text)
+                for value in _strings(_maybe_json(literal))]
+    return []
+
+
+def _user_texts(payload: dict, texts: list) -> list:
+    meta = payload.get("internal_chat_message_metadata_passthrough") or {}
+    provenance = meta.get("content_item_metadata") if isinstance(meta, dict) else None
+    if isinstance(provenance, list) and len(provenance) == len(texts):
+        return [text for text, item in zip(texts, provenance)
+                if isinstance(item, dict) and (item.get("provenance") or {}).get("type") == "user"]
+    # 旧版没有来源标记：只排除已知的注入块，保留用户自己输入的 XML、HTML 等。
+    injected = ("# AGENTS.md instructions", "<environment_context>", "<permissions instructions>",
+                "<turn_aborted>", "<user_instructions>", "<skill>")
+    return [text for text in texts if text.strip() and not text.lstrip().startswith(injected)]
 
 
 def _first_record(path: Path) -> dict:
@@ -451,13 +476,9 @@ def digest_rollout(path: Path, project: Path) -> dict:
     """把 Codex 的一个会话文件压缩成摘要，字段与 Claude Code 的摘要一致。
 
     每行是 {"timestamp", "type", "payload"}。
-    已对照真实文件：session_meta（id、cwd、cli_version、git）、
-                  response_item/message 的用户消息（content 里 type 为 input_text）、
-                  turn_context（model）。
-    未对照真实文件（按公开的 Responses API 形状写的）：
-                  助手回复（role 为 assistant，content 里 type 为 output_text）、
-                  工具调用（payload.type 为 function_call / custom_tool_call / local_shell_call，
-                  改文件走 apply_patch，补丁里有 "*** Update File: 路径"）。
+    已对照真实文件：session_meta、turn_context、用户来源标记、助手 output_text、
+    code mode 的 exec/tools.apply_patch。工具次数按会话中记录的调用名统计（exec 不猜拆为子调用）。
+    文件列表来自编辑补丁；无法从任意 shell 命令可靠推断改过哪些文件。
     """
     prompts, files, tools, models = [], [], Counter(), []
     started = ended = branch = version = None
@@ -493,18 +514,16 @@ def digest_rollout(path: Path, project: Path) -> dict:
                     texts = [c.get("text", "") for c in (p.get("content") or [])
                              if isinstance(c, dict) and c.get("type") in ("input_text", "output_text", "text")]
                     if p.get("role") == "user":
-                        # 以 < 或 "# AGENTS.md instructions" 开头的是 Codex 自动注入的内容，不是用户的话
-                        mine = [t.strip() for t in texts
-                                if t.strip() and not t.lstrip().startswith(("<", "# AGENTS.md instructions"))]
+                        mine = [t.strip() for t in _user_texts(p, texts) if t.strip()]
                         if mine:
                             prompts.append(_clip("\n".join(mine), 2000))
-                    elif p.get("role") == "assistant":
+                    elif p.get("role") == "assistant" and p.get("phase") != "analysis":
                         text = "\n".join(t for t in texts if t.strip())
                         if text.strip():
                             last_reply = text
                 elif ptype in ("function_call", "custom_tool_call", "local_shell_call"):
                     tools[p.get("name") or ptype] += 1
-                    blob = "\n".join(_strings(p.get("input")) + _strings(_maybe_json(p.get("arguments"))))
+                    blob = "\n".join(_patch_texts(p))
                     for fp in _PATCH_FILE.findall(blob):
                         fp = fp.strip().strip("\"'")
                         rel = relative_to_project(fp, root)

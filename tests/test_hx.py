@@ -281,7 +281,7 @@ trust_level = "trusted"
 
 
 def codex_rollout(project: Path, sid: str, prompt: str, ended: str) -> str:
-    """按 codex-cli 0.169.0 真实会话文件的形状构造。助手回复和工具调用两行的形状未经真实文件核对。"""
+    """按 2026-11-14 完整真实会话构造；code mode 的补丁是 exec 内转义的 JS 字符串。"""
     lines = [
         {"timestamp": "2026-02-01T00:00:00Z", "type": "session_meta",
          "payload": {"id": sid, "cwd": str(project), "cli_version": "0.169.0", "git": {"branch": "main"}}},
@@ -291,12 +291,16 @@ def codex_rollout(project: Path, sid: str, prompt: str, ended: str) -> str:
                 {"type": "input_text", "text": "<environment_context>...</environment_context>"}]}},
         {"timestamp": "2026-02-01T00:00:02Z", "type": "turn_context", "payload": {"model": "gpt-test"}},
         {"timestamp": "2026-02-01T00:00:03Z", "type": "response_item", "payload": {
-            "type": "message", "role": "user", "content": [{"type": "input_text", "text": prompt}]}},
+            "type": "message", "role": "user", "content": [{"type": "input_text", "text": prompt}],
+            "internal_chat_message_metadata_passthrough": {
+                "content_item_kinds": ["user.text"], "content_item_metadata": [{"provenance": {"type": "user"}}]}}},
         {"timestamp": "2026-02-01T00:00:04Z", "type": "response_item", "payload": {
-            "type": "custom_tool_call", "name": "apply_patch",
-            "input": "*** Begin Patch\n*** Update File: " + str(project / "pay.py") + "\n@@\n*** End Patch"}},
+            "type": "custom_tool_call", "name": "exec", "call_id": "call_patch", "status": "completed",
+            "input": "text(await tools.apply_patch(" + json.dumps(
+                "*** Begin Patch\n*** Update File: " + str(project / "pay.py") + "\n@@\n*** End Patch") + "));"}},
         {"timestamp": ended, "type": "response_item", "payload": {
-            "type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Patched."}]}},
+            "type": "message", "role": "assistant", "phase": "final_answer",
+            "content": [{"type": "output_text", "text": "Patched.", "annotations": [], "logprobs": []}]}},
     ]
     return "\n".join(json.dumps(x) for x in lines) + "\n"
 

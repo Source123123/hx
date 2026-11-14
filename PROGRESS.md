@@ -40,7 +40,6 @@
 - 外部状态声明要靠人或 Agent 主动记录；Agent 是否会按 /hx:save 的提示去记，没有在真实会话里观察过。
 - 可重建资源的新旧判断用文件修改时间（和 make 一样），git 检出会刷新修改时间，可能把已是最新的产物报成"过期"。
 - 没有做真实的 MCP 连通性检查：体检只看命令是否存在，不启动 MCP 服务器。
-- Codex 会话文件里**助手回复和工具调用**的形状没有对照真实文件（开发机连不上 OpenAI）。见 src/hx/adapters/codex.py 开头的说明。
 - Codex 的项目级技能目录、prompts 目录、AGENTS.override.md、项目级 config.toml 的 MCP：按推测写，未核对。
 - Codex 没有"一键"体验（插件、钩子、团队接入）；Codex 的通用设置只留作参考、不还原。
 - 跨 Agent 转过去的技能和指令入口，没有在真实的 Agent 会话里确认"确实被用上了"。
@@ -60,3 +59,13 @@
 ## 备注
 - 远端：https://github.com/Source123123/hx（main 分支）。每完成一步就 commit 并 push。
 - 模拟另一台机器：设置环境变量 HX_HOME 指向一个目录，hx 会把它当作主目录（此时忽略 CLAUDE_CONFIG_DIR / CODEX_HOME，也不探测本机的 claude / codex 版本）。
+
+## 本轮接手（2026-11-14）
+
+### 1. 真实会话格式核对
+- 在 Windows、已登录的 codex-cli 0.167.0-alpha.4.1 上实际创建并修改 greeting.txt 和 notes.md，读回正确后正常结束。
+- 六项均已对照：用户要求、文件、工具次数、模型、最后答复、git 分支。助手 output_text 的推测正确；工具实际是 custom_tool_call/exec，里面的 tools.apply_patch 字符串需要先解开转义。已修正误把整段补丁当文件名的问题。
+- 用户来源标记优先，保留用户输入的 HTML/XML，排除自动注入指令；工具次数按真实外层调用名记录，因此本次为 exec: 3。
+- tests/fixtures/codex-real-rollout.jsonl 是裁短脱敏的真实文件；tests/test_hx.py 的构造同步更新。
+- 初始安装和全部 35 项测试通过；新增 2 项真实记录回归测试通过，原有 Codex 相关测试通过。
+- 限制：任意 shell 命令是否修改文件无法可靠推断；旧版直接工具形状保留构造测试，未在本机另装旧版生成。
