@@ -165,7 +165,7 @@ env_http_headers = { Authorization = "TOKEN_NAME" }
         path = self.project / ".codex/config.toml"
         original = '# keep this comment\nmodel = "local"\n[mcp_servers.mine]\ncommand = "python"\n'
         write_text(path, original)
-        self.assertEqual(self.adapter.team_setup(self.project, True), [".codex/config.toml"])
+        self.assertEqual(self.adapter.team_setup(self.project, True), [".codex/config.toml", ".agents/plugins/marketplace.json"])
         self.assertTrue(self.adapter.team_enabled(self.project))
         self.assertTrue(path.read_text(encoding="utf-8").startswith(original))
         self.assertEqual(self.adapter.team_setup(self.project, True), [])
@@ -176,6 +176,32 @@ env_http_headers = { Authorization = "TOKEN_NAME" }
         write_text(path, '[marketplaces.hx]\nsource_type = "git"\nsource = "https://other.invalid/market.git"\n')
         with self.assertRaises(HxError):
             self.adapter.team_setup(self.project, True)
+
+    def test_team_keeps_existing_catalog_and_name(self):
+        path = self.project / ".agents/plugins/marketplace.json"
+        other = {"name": "other", "source": {"source": "local", "path": "./other"}}
+        write_text(path, json.dumps({"name": "team-market", "plugins": [other], "interface": {"displayName": "Team"}}))
+        self.adapter.team_setup(self.project, True)
+        config = parse_toml((self.project / ".codex/config.toml").read_text(encoding="utf-8"))
+        self.assertTrue(config["plugins"]["hx@team-market"]["enabled"])
+        self.assertTrue(self.adapter.team_enabled(self.project))
+        self.adapter.team_setup(self.project, False)
+        self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["plugins"], [other])
+        self.assertFalse(self.adapter.team_enabled(self.project))
+
+    def test_inventory_queries_project_catalog_without_changing_config(self):
+        self.adapter.team_setup(self.project, True)
+        config = self.home / ".codex/config.toml"
+        write_text(config, '# keep\nmodel = "local"\n')
+        before = config.read_bytes()
+        result = subprocess.CompletedProcess([], 0, stdout='{"installed": []}')
+        with patch.dict(os.environ, {"HX_HOME": "", "CODEX_HOME": str(self.home / ".codex")}), \
+                patch("hx.adapters.codex.shutil.which", return_value="codex"), \
+                patch("hx.adapters.codex.subprocess.run", return_value=result) as run:
+            self.assertEqual(self.adapter._plugin_inventory(self.home, self.project), [])
+            args = run.call_args[0][0]
+        self.assertIn('marketplaces.hx.source_type="local"', args)
+        self.assertEqual(config.read_bytes(), before)
 
 
 class HookInputTest(unittest.TestCase):

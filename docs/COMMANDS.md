@@ -97,9 +97,12 @@ hx team [on|off]
 ```
 
 开启后，hx 在项目配置中声明 hx 插件：Claude Code 使用 `.claude/settings.json`；
-Codex 使用 `.codex/config.toml` 的 `[marketplaces.hx]` Git 来源和 `[plugins."hx@hx"] enabled = true`。
-Codex 必须先信任项目，安装或刷新由 Codex 处理，不保证弹出安装窗口；钩子仍需用户审阅。
-关闭 Codex 接入会把该项目的插件设为禁用，保留市场来源及其他设置。已有不同的 hx 市场不会被覆盖。
+Codex 使用 `.agents/plugins/marketplace.json` 的 hx 远程来源，配合 `.codex/config.toml` 的
+`[plugins."hx@市场名"] enabled = true`。已有项目市场的名称和其他插件保持原样。
+Codex 必须先信任项目；原生项目插件目录能发现 hx，但不保证弹出安装窗口或自动安装，钩子仍需用户审阅。
+CLI 的 plugin list 默认不枚举项目市场，首次接入可在项目目录运行
+`codex plugin marketplace add .`，再运行 `codex plugin add hx@市场名`（新建市场默认为 hx）。
+关闭接入会禁用该项目插件并移除目录中的 hx 条目，保留其他设置。已有不同来源的 hx 不会被覆盖。
 被修改的文件此前没有未提交改动时，hx 会将其单独提交。
 
 ## 可搬运性与隐私

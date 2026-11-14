@@ -20,7 +20,12 @@
 - [x] M10（v0.4）兼容性：格式版本检查、git 版本检查、Python 版本检查、可关闭会话摘要；文档体系重写（27 个测试通过）
 - [x] M11（v0.5）动态内容：路径占位符、私有词代称、hx audit、可重建资源、外部状态声明、来源标记、合并冲突自动解决、目录大小保护（35 个测试通过）
 
+- [x] M12（v0.6）Codex 真实格式核对、项目 MCP、覆盖指令、技能、插件体检与一键入口
+- [x] M13（v0.6.1）真实 Codex 迁移和 GitHub 插件安装验证、新机器团队目录修复
+
 ## 已验证
+- 本轮接手完成真实 Codex 格式核对、当前配置核对、插件入口与钩子、真实迁移验证，详细证据见下方第 1–4 节。主机为 Windows 10 专业版 19045、Python 3.12、codex-cli 0.167.0-alpha.4.1。
+- 实际 Windows 目录下的路径、盘符、JSON 双反斜杠完成保存 → clone → 载入，按 path_key 核对指向新位置。跨系统真实模型会话未测，三系统自动测试已覆盖。
 - Python 3.9 / 3.10 / 3.11 / 3.12 / 3.13 / 3.14：本机用 uv 逐个版本跑过全部测试；GitHub Actions 在 Windows、macOS、Linux 上各跑一遍（Ubuntu 的 3.9 在 22.04 镜像上）。
 - 旧格式（hx 0.1 / 0.2 的单 Agent 清单和锁文件）可以载入，再次保存时升级；更新的格式被明确拒绝。
 - 三个系统的自动测试（GitHub Actions）全部通过，包括用 bin/hx（Git Bash）和 bin\\hx.cmd（命令提示符）实际执行保存。
@@ -35,21 +40,20 @@
 - 跨 Agent：Codex 保存的项目在只有 Claude Code 的机器上载入、反过来也一样：通过（Claude 侧用模拟主目录）
 
 ## 未验证 / 已知局限
-- 路径占位符在 Windows 上的替换（盘符、反斜杠、JSON 里的双反斜杠）只有自动测试覆盖，没有在真实的 Windows 用户目录上跑过完整的保存和载入。
 - hx audit 的"像密钥的随机字符串"靠信息熵判断，会漏掉低熵的密钥，也会误报随机 ID。它是提示，不是保证。
 - 外部状态声明要靠人或 Agent 主动记录；Agent 是否会按 /hx:save 的提示去记，没有在真实会话里观察过。
 - 可重建资源的新旧判断用文件修改时间（和 make 一样），git 检出会刷新修改时间，可能把已是最新的产物报成"过期"。
-- 没有做真实的 MCP 连通性检查：体检只看命令是否存在，不启动 MCP 服务器。
+- hx doctor 仍只做命令存在性检查，不启动任意 MCP；本轮受控 MCP 已通过真实 Codex 握手和工具调用。
 - Codex 的通用设置只留作参考、不还原；用户级生成记忆不按项目搬运。
-- 跨 Agent 转过去的技能和指令入口，没有在真实的 Agent 会话里确认"确实被用上了"。
+- Claude 格式 → Codex 的技能、指令、MCP 已在真实 Codex 会话中使用；反向的真实 Claude 会话未测，本机没有 Claude Code。
 - 团队一键接入写入的 .claude/settings.json，没有在交互式会话里确认"同事打开项目时弹出安装提示"。
-- /hx:load 的多步交互流程没有在真实对话里跑过。
+- Claude 的 /hx:load 多步交互未测；Codex 的 $hx:load 已在授权的真实会话中实际预览并载入。
 - 还原的原始对话能否被 `claude --resume` 续上没有测（实验性）；Codex 的原始对话只导出、不还原。
-- Windows 上 Claude Code 插件的钩子和 /hx:save 是否能正确调用 bin/hx 没有实测（CI 只验证了启动器本身在 Git Bash 和命令提示符下可用）。Windows 10 没有单独测，CI 用的是 Windows Server（与 Windows 11 同代内核）。
+- Windows 上 Claude Code 插件的钩子和 /hx:save 是否能正确调用 bin/hx 没有实测（CI 只验证了启动器本身在 Git Bash 和命令提示符下可用）。本轮真实主机是 Windows 10，Codex 钩子和入口已测；Claude 钩子仍未测。
 - 同一种 Agent 的个人配置是"最后保存的人为准"（见 DESIGN 6.2）。
 
 ## 下一步
-1. 在装有 Codex 且能登录的机器上：用真实会话核对会话文件格式、核对其余推测、做 Codex 侧的一键体验、真实环境端到端验证。
+1. 在装有 Claude Code 的真实环境补做反向迁移和 Claude 插件的 Windows 交互验证。
 2. LLM 提炼器：从会话里自动抽取决策、待办和外部状态声明的草稿。
 2b. 可选的深度体检：真实启动 MCP 服务器并完成握手（需要用户明确同意，因为这等于执行项目带来的命令）。
 3. `hx status`：不改文件，只报告当前状态与上次快照的差异。
@@ -89,6 +93,20 @@
 - 本机 `codex exec` 不发 SessionStart；原生交互式客户端传入 startup 事件时会触发。强制杀进程不保证会话结束钩子执行。
 - 结束钩子最长 3 秒，使用 `auto-save --background`；后台结果保存在本机 ~/.hx/logs/auto-save-*.log。开始只报告，不还原，不写用户目录。
 - 项目目录优先取钩子标准输入 JSON 的 cwd，兼容 CLAUDE_PROJECT_DIR，并支持从项目子目录启动。
-- `team_setup` / `team_enabled` 使用当前官方支持的可信项目 `[marketplaces.hx]` 和 `[plugins."hx@hx"]`，保留其他设置，已有同名不同市场时报错而不覆盖。不承诺与 Claude 相同的安装弹窗，钩子仍须同事审阅。
+- `team_setup` / `team_enabled` 最终使用项目 `.agents/plugins/marketplace.json` 的远程插件来源，配合 `.codex/config.toml` 的插件开关，保留已有市场名和其他条目。不承诺与 Claude 相同的安装弹窗，钩子仍须同事审阅。
+- 新机器实测修正：早期仅写 Git 市场配置会因缺少已下载快照而失败；现原生 `plugin/list(cwds=[项目])` 能发现 hx，状态为 AVAILABLE、enabled=true，且无加载错误。CLI 的 plugin list 不传 cwds，因此不显示项目目录；CLI 用户首次接入仍须添加市场并安装，不能假装已自动完成。
+- 插件抓取和体检查询也临时纳入项目目录，不写用户配置。实际记录了从 GitHub 装入的 hx@hx 0.6.0 的名称、Git 来源和版本。
 - README、COMMANDS、DESIGN、CHANGELOG 已更新。新增跨系统声明钩子测试（含带空格的插件目录）：开始时主目录完全不变；结束只提交 .harness/，保留已暂存的代码和未安装 Agent 的内容。9 项 Codex 专项测试通过；全部 44 项测试通过（Python 3.12、Windows 10 专业版 19045）。
 - 官方依据：https://developers.openai.com/plugins/build/plugins 、https://learn.chatgpt.com/docs/hooks 、https://learn.chatgpt.com/docs/config-file/config-reference 。
+
+### 4. 真实环境端到端验证
+- 同类迁移：Windows 上实际 hx save → git clone 到另一目录 → 空的 HX_HOME（只创建 .codex 模拟已装 Codex）→ hx load --dry-run（确认未写入）→ hx load --yes。codex mcp list --json 读出 hx_user 和 hx_project。
+- 启动真实 Codex，实际调用 hx_project.hx_ping 返回 HX_MCP_OK，且最终输出 HX_PROJECT_RULE_OK、HX_USER_RULE_OK、HX_USER_SKILL_OK、HX_PROJECT_SKILL_OK，证明项目/个人指令及两类技能实际生效。
+- 跨 Agent：受控 Claude 格式样例经过真实 hx save → clone → 只有 Codex 的 HX_HOME 中 hx load，生成 AGENTS.md 指路入口、项目技能、MCP。真实 Codex 阅读 CLAUDE.md、执行 e2e-claude 技能、调用 hx_claude.hx_ping，输出 HX_CLAUDE_RULE_OK、HX_CLAUDE_SKILL_OK、HX_MCP_OK。
+- 从 GitHub 实际安装 hx@hx 0.6.0 后，在真实 Codex 会话中执行 $hx:save → $hx:load 的预览 → 已授权载入 → 阅读 HANDOFF，三条启动器命令均成功，无需 pip；未推送、未强制覆盖。
+- 本机没有 claude 命令，因此没有反向真实 Claude 会话验证；Claude 来源是受控样例，不能算运行过 Claude 本身。反向转换及 Claude 原有流程仍由自动测试覆盖。
+- 新增 tests/manual_codex_e2e.py 可重复上述迁移检查。它会使用真实模型额度，只写临时项目和隔离配置；认证不进项目，结束后删除临时复制的 auth.json。
+- Windows 真实路径（含 JSON 里的双反斜杠）保存后换根正确，按项目统一的 path_key 比较；保留本机不同内容的行为与备份也经过既有测试覆盖。
+- 0.6.0 提交 46b1a06 的 GitHub Actions 18/18 组合已通过：https://github.com/Source123123/hx/actions/runs/43563678746 。本轮最后修订的自动测试结果见后续记录。
+
+- 0.6.1 最终本机检查：46/46 测试通过（含后备 TOML、旧格式、Claude Code、跨系统钩子）；测试用认证副本已清理。

@@ -77,6 +77,8 @@ class CodexAdapter(Adapter):
         for f in ("AGENTS.md", "AGENTS.override.md"):
             ctx.ref(f, "instructions")
         ctx.ref(".codex/config.toml", "settings")
+        ctx.ref(".codex/hooks.json", "hooks")
+        ctx.ref(".agents/plugins/marketplace.json", "plugins")
         for d in (".codex/skills", ".agents/skills"):
             ctx.ref_tree(d, "skills")
 
@@ -237,7 +239,13 @@ class CodexAdapter(Adapter):
         if not exe:
             return None
         try:
-            result = subprocess.run([exe, "plugin", "list", "--json"], cwd=project,
+            args = [exe, "plugin", "list", "--json"]
+            # CLI 不传原生 plugin/list 的 cwds，默认漏掉项目市场；仅本次查询增加本地来源，不改用户配置。
+            catalog = read_json(project / ".agents/plugins/marketplace.json", {}) or {}
+            if isinstance(catalog, dict) and isinstance(catalog.get("name"), str):
+                key = "marketplaces." + _toml_key(catalog["name"])
+                args += ["-c", key + '.source_type="local"', "-c", key + ".source=" + _toml_value(project.as_posix())]
+            result = subprocess.run(args, cwd=project,
                                     env=dict(os.environ, CODEX_HOME=str(self.user_root(home))),
                                     capture_output=True, text=True, timeout=15, encoding="utf-8", errors="replace")
             data = json.loads(result.stdout)
@@ -250,29 +258,51 @@ class CodexAdapter(Adapter):
 
     def team_enabled(self, project: Path) -> bool:
         config = parse_toml(_read(project / ".codex/config.toml"))
-        plugin = (config.get("plugins") or {}).get("hx@hx") or {}
-        market = (config.get("marketplaces") or {}).get("hx") or {}
-        return plugin.get("enabled") is True and market.get("source") == _hx_market_source()
+        catalog = read_json(project / ".agents/plugins/marketplace.json", {}) or {}
+        if not isinstance(catalog, dict) or not isinstance(catalog.get("name"), str) or not isinstance(catalog.get("plugins"), list):
+            return False
+        plugin = (config.get("plugins") or {}).get("hx@" + catalog.get("name", "hx")) or {}
+        return plugin.get("enabled") is True and any(p.get("name") == "hx" and
+            p.get("source") == {"source": "url", "url": _hx_market_source()}
+            for p in catalog.get("plugins", []) if isinstance(p, dict))
 
     def team_setup(self, project: Path, enable: bool) -> list:
-        """项目声明可信的 Git 市场；信任、插件安装和钩子审阅仍由 Codex 负责。"""
+        """使用项目原生市场目录，不依赖同事主目录中预先下载好的市场快照。"""
         path = project / ".codex/config.toml"
+        catalog_path = project / ".agents/plugins/marketplace.json"
         text = _read(path)
         config = parse_toml(text)
         market = (config.get("marketplaces") or {}).get("hx") or {}
         if market and market.get("source") != _hx_market_source():
             raise HxError("项目已声明另一个名为 hx 的 Codex 插件市场，未覆盖；请先检查 .codex/config.toml。")
-        if not enable and not market and "hx@hx" not in (config.get("plugins") or {}):
-            return []
+        catalog = read_json(catalog_path, {}) or {"name": "hx", "plugins": []}
+        if not isinstance(catalog, dict) or not isinstance(catalog.get("name"), str) or not isinstance(catalog.get("plugins"), list):
+            raise HxError("项目的 .agents/plugins/marketplace.json 格式无法识别，未改动；请先检查这个文件。")
+        source = {"source": "url", "url": _hx_market_source()}
+        entries = [p for p in catalog["plugins"] if isinstance(p, dict) and p.get("name") == "hx"]
+        if any(p.get("source") != source for p in entries):
+            raise HxError("项目市场里已有不同来源的 hx 插件，未覆盖；请先检查 .agents/plugins/marketplace.json。")
+        plugin_id = "hx@" + catalog["name"]
+        before = json.dumps(catalog, sort_keys=True)
+        if enable and not entries:
+            catalog["plugins"].append({"name": "hx", "source": source,
+                "policy": {"installation": "AVAILABLE", "authentication": "ON_INSTALL"}, "category": "Productivity"})
+        elif not enable:
+            catalog["plugins"] = [p for p in catalog["plugins"] if not isinstance(p, dict) or p.get("name") != "hx"]
+        changed = []
         updated = text
-        if enable:
-            updated = set_toml_fields(updated, ("marketplaces", "hx"),
-                                      {"source_type": "git", "source": _hx_market_source()})
-        updated = set_toml_fields(updated, ("plugins", "hx@hx"), {"enabled": enable})
-        if updated == text:
-            return []
-        write_text(path, updated)
-        return [".codex/config.toml"]
+        # 兼容本轮早期的配置写法：只移除 hx 自己写的两个字段，不删除其他市场或自定义字段。
+        if market == {"source_type": "git", "source": _hx_market_source()}:
+            updated = remove_toml_section(updated, ("marketplaces", "hx"))
+        if enable or plugin_id in (config.get("plugins") or {}):
+            updated = set_toml_fields(updated, ("plugins", plugin_id), {"enabled": enable})
+        if updated != text:
+            write_text(path, updated)
+            changed.append(".codex/config.toml")
+        if json.dumps(catalog, sort_keys=True) != before:
+            write_text(catalog_path, json.dumps(catalog, ensure_ascii=False, indent=2) + "\n")
+            changed.append(".agents/plugins/marketplace.json")
+        return changed
 
 
 # ---------- MCP：Codex 写法 <-> 中立写法 ----------
@@ -358,6 +388,17 @@ def set_toml_fields(text: str, section: tuple, values: dict) -> str:
             pending.pop(key)
     lines[end:end] = [f"{_toml_key(k)} = {_toml_value(v)}" for k, v in pending.items()]
     return "\n".join(lines) + "\n"
+
+
+def remove_toml_section(text: str, section: tuple) -> str:
+    lines, out, skipping = text.splitlines(), [], False
+    for line in lines:
+        header = _HEADER.match(line)
+        if header:
+            skipping = tuple(_split_key(header.group(1))) == section
+        if not skipping:
+            out.append(line)
+    return "\n".join(out) + "\n"
 
 
 def neutral_to_codex(spec: dict) -> tuple:
