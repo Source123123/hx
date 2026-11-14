@@ -22,7 +22,7 @@ import subprocess
 from collections import Counter
 from pathlib import Path
 
-from ..util import HARNESS_DIR, env_refs, read_json
+from ..util import HARNESS_DIR, env_refs, path_key, read_json, relative_to_project, write_text
 from .base import Action, Adapter, CaptureContext, Check, Neutral, place_file
 
 A = "agent/codex"
@@ -56,10 +56,11 @@ class CodexAdapter(Adapter):
         if not root.is_dir():
             return []
         files = sorted(root.rglob("rollout-*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)[:SCAN_LIMIT]
-        want = str(project.resolve())
+        want = path_key(project.resolve())
         found = []
         for f in files:
-            if _rollout_cwd(f) == want:
+            cwd = _rollout_cwd(f)
+            if cwd and path_key(cwd) == want:
                 found.append(f)
                 if first_only:
                     break
@@ -115,7 +116,8 @@ class CodexAdapter(Adapter):
         if not exe:
             return None
         try:
-            out = subprocess.run([exe, "--version"], capture_output=True, text=True, timeout=10).stdout
+            out = subprocess.run([exe, "--version"], capture_output=True, text=True, timeout=10,
+                                 encoding="utf-8", errors="replace").stdout
         except Exception:
             return None
         m = re.search(r"\d+\.\d+\.\d+", out)
@@ -313,7 +315,7 @@ def merge_mcp_toml(config: Path, servers: dict, dry_run: bool = False) -> list:
     if blocks and not dry_run:
         config.parent.mkdir(parents=True, exist_ok=True)
         sep = "" if not text else ("\n" if text.endswith("\n") else "\n\n")
-        config.write_text(text + sep + "\n".join(blocks), encoding="utf-8")
+        write_text(config, text.replace("\r\n", "\n") + sep + "\n".join(blocks))
     return actions
 
 
@@ -417,6 +419,27 @@ def _rollout_cwd(path: Path) -> str | None:
     return payload.get("cwd") if d.get("type") == "session_meta" else None
 
 
+def _maybe_json(value):
+    """工具调用的参数常常是一段 JSON 文本，解开它才能拿到里面真正的字符串。"""
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except ValueError:
+            return value
+    return value
+
+
+def _strings(value) -> list:
+    """把任意嵌套的值里的字符串都取出来。"""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [s for v in value.values() for s in _strings(v)]
+    if isinstance(value, list):
+        return [s for v in value for s in _strings(v)]
+    return []
+
+
 def _clip(s: str, n: int) -> str:
     s = s.strip()
     return s if len(s) <= n else s[:n] + " …(截断)"
@@ -479,11 +502,10 @@ def digest_rollout(path: Path, project: Path) -> dict:
                             last_reply = text
                 elif ptype in ("function_call", "custom_tool_call", "local_shell_call"):
                     tools[p.get("name") or ptype] += 1
-                    blob = "%s\n%s" % (p.get("arguments") or "", p.get("input") or "")
-                    blob = blob.replace("\\n", "\n")
+                    blob = "\n".join(_strings(p.get("input")) + _strings(_maybe_json(p.get("arguments"))))
                     for fp in _PATCH_FILE.findall(blob):
                         fp = fp.strip().strip("\"'")
-                        rel = fp[len(root):].lstrip("/") if fp.startswith(root + "/") else fp
+                        rel = relative_to_project(fp, root)
                         if rel not in files:
                             files.append(rel)
     return {

@@ -2,8 +2,11 @@
 import io
 import json
 import os
+import ntpath
+import re
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
@@ -11,9 +14,9 @@ from pathlib import Path
 
 from hx import core
 from hx.adapters.claude_code import digest_session, project_slug
-from hx.adapters.codex import parse_toml, parse_toml_simple
+from hx.adapters.codex import digest_rollout, parse_toml, parse_toml_simple
 from hx.redact import Redactor
-from hx.util import HxError
+from hx.util import HxError, path_key, relative_to_project, sha256_bytes
 
 FAKE_KEY = "sk-ant-" + "a1b2c3d4e5" * 3
 
@@ -37,7 +40,9 @@ class Env:
     """测试环境：一个项目，机器 A 上有 Claude Code 的配置和会话。"""
 
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
+        # Windows 上 .git 里的只读文件会让清理报错，所以忽略清理错误
+        self.tmp = (tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+                    if sys.version_info >= (3, 10) else tempfile.TemporaryDirectory())
         root = Path(self.tmp.name).resolve()
         self.root = root
         self.a, self.b = Machine(root, "a"), Machine(root, "b")
@@ -46,23 +51,23 @@ class Env:
         sh(self.project, "git", "init", "-q", "-b", "main")
         sh(self.project, "git", "config", "user.email", "t@example.com")
         sh(self.project, "git", "config", "user.name", "t")
-        (self.project / "CLAUDE.md").write_text("# rules\n")
+        (self.project / "CLAUDE.md").write_text("# rules\n", encoding="utf-8")
         (self.project / ".mcp.json").write_text(json.dumps(
-            {"mcpServers": {"gh": {"command": "git", "env": {"GH": "${GITHUB_TOKEN}"}}}}))
+            {"mcpServers": {"gh": {"command": "git", "env": {"GH": "${GITHUB_TOKEN}"}}}}), encoding="utf-8")
         sh(self.project, "git", "add", "-A")
         sh(self.project, "git", "commit", "-qm", "init")
 
         c = self.a.claude
-        (c / "CLAUDE.md").write_text(f"be brief. key {FAKE_KEY}\n")
+        (c / "CLAUDE.md").write_text(f"be brief. key {FAKE_KEY}\n", encoding="utf-8")
         (c / "skills/deploy").mkdir(parents=True)
-        (c / "skills/deploy/SKILL.md").write_text("deploy\n")
+        (c / "skills/deploy/SKILL.md").write_text("deploy\n", encoding="utf-8")
         (c / "skills/synced/x").mkdir(parents=True)
-        (c / "skills/synced/x/SKILL.md").write_text("builtin\n")
+        (c / "skills/synced/x/SKILL.md").write_text("builtin\n", encoding="utf-8")
         (c / "settings.json").write_text(json.dumps(
-            {"model": "m-1", "env": {"API_TOKEN": "abcdefgh12345", "DEBUG": "1"}}))
+            {"model": "m-1", "env": {"API_TOKEN": "abcdefgh12345", "DEBUG": "1"}}), encoding="utf-8")
         data = c / "projects" / project_slug(self.project)
         (data / "memory").mkdir(parents=True)
-        (data / "memory/MEMORY.md").write_text("prefers pnpm\n")
+        (data / "memory/MEMORY.md").write_text("prefers pnpm\n", encoding="utf-8")
         lines = [
             {"type": "user", "timestamp": "2026-01-01T00:00:00Z", "gitBranch": "main", "version": "9.9.9",
              "message": {"role": "user", "content": "add a login page"}},
@@ -72,17 +77,20 @@ class Env:
                 {"type": "text", "text": "Done."}]}},
             "not json",
         ]
-        (data / "s1.jsonl").write_text("\n".join(x if isinstance(x, str) else json.dumps(x) for x in lines))
+        (data / "s1.jsonl").write_text("\n".join(x if isinstance(x, str) else json.dumps(x) for x in lines), encoding="utf-8")
         (self.a.home / ".claude.json").write_text(json.dumps({
-            "mcpServers": {"db": {"command": "git", "env": {"DB_PASSWORD": "hunter2hunter2"}}}}))
+            "mcpServers": {"db": {"command": "git", "env": {"DB_PASSWORD": "hunter2hunter2"}}}}), encoding="utf-8")
         self.a.use()
 
     def tearDown(self):
         os.environ.pop("HX_HOME", None)
-        self.tmp.cleanup()
+        try:
+            self.tmp.cleanup()
+        except OSError:
+            pass
 
     def all_text(self, d: Path) -> str:
-        return "\n".join(p.read_text(errors="replace") for p in d.rglob("*") if p.is_file())
+        return "\n".join(p.read_text(encoding="utf-8", errors="replace") for p in d.rglob("*") if p.is_file())
 
 
 class FlowTest(Env, unittest.TestCase):
@@ -99,23 +107,23 @@ class FlowTest(Env, unittest.TestCase):
         self.assertFalse((h / "agent/claude-code/project").exists())
         self.assertIn(".harness/agent/claude-code/user/skills/deploy/SKILL.md", paths)
         self.assertFalse(any("synced" in p for p in paths))               # 内置技能不打包
-        settings = json.loads((h / "agent/claude-code/user/settings.json").read_text())
+        settings = json.loads((h / "agent/claude-code/user/settings.json").read_text(encoding="utf-8"))
         self.assertEqual(settings["env"], {"DEBUG": "1"})                  # 非密钥保留，密钥删掉
-        digest = json.loads((h / "context/sessions/s1.json").read_text())
+        digest = json.loads((h / "context/sessions/s1.json").read_text(encoding="utf-8"))
         self.assertEqual(digest["prompts"], ["add a login page"])
         self.assertEqual(digest["files_changed"], ["login.py"])
         self.assertEqual(r["lock"]["agent"]["version"], "9.9.9")
         self.assertEqual(r["lock"]["model"], "m-1")
-        self.assertIn("add a login page", (h / "context/HANDOFF.md").read_text())
+        self.assertIn("add a login page", (h / "context/HANDOFF.md").read_text(encoding="utf-8"))
 
     def test_snapshot_history_and_diff(self):
         core.init(self.project)
         r1 = core.snapshot(self.project, "first")
         self.assertTrue(r1["committed"])
         self.assertFalse(core.snapshot(self.project, "again")["committed"])   # 无变化不产生提交
-        (self.a.claude / "skills/deploy/SKILL.md").write_text("deploy v2\n")
+        (self.a.claude / "skills/deploy/SKILL.md").write_text("deploy v2\n", encoding="utf-8")
         (self.a.claude / "agents").mkdir()
-        (self.a.claude / "agents/r.md").write_text("reviewer\n")
+        (self.a.claude / "agents/r.md").write_text("reviewer\n", encoding="utf-8")
         r2 = core.snapshot(self.project, "second")
         self.assertNotEqual(r1["lock"]["snapshot"], r2["lock"]["snapshot"])
         rows = core.log(self.project)
@@ -128,9 +136,9 @@ class FlowTest(Env, unittest.TestCase):
         self.assertEqual(len(d["categories"]["agents"]["added"]), 1)
         # 人工维护的文件不会被 capture 覆盖
         intent = self.project / ".harness/context/intent.md"
-        intent.write_text("my intent\n")
+        intent.write_text("my intent\n", encoding="utf-8")
         core.capture(self.project)
-        self.assertEqual(intent.read_text(), "my intent\n")
+        self.assertEqual(intent.read_text(encoding="utf-8"), "my intent\n")
 
     def test_migrate_by_git_clone(self):
         core.init(self.project)
@@ -140,20 +148,20 @@ class FlowTest(Env, unittest.TestCase):
         self.b.use()
         actions = core.materialize(clone)
         self.assertFalse([a for a in actions if a.status == "conflict"])
-        self.assertEqual((self.b.claude / "skills/deploy/SKILL.md").read_text(), "deploy\n")
+        self.assertEqual((self.b.claude / "skills/deploy/SKILL.md").read_text(encoding="utf-8"), "deploy\n")
         mem = self.b.claude / "projects" / project_slug(clone) / "memory/MEMORY.md"
-        self.assertEqual(mem.read_text(), "prefers pnpm\n")
-        mcp = json.loads((clone / ".mcp.json").read_text())["mcpServers"]
+        self.assertEqual(mem.read_text(encoding="utf-8"), "prefers pnpm\n")
+        mcp = json.loads((clone / ".mcp.json").read_text(encoding="utf-8"))["mcpServers"]
         self.assertEqual(mcp["db"]["env"], {"DB_PASSWORD": "${DB_PASSWORD}"})
         self.assertIn("gh", mcp)                                           # 原有的保留
         # 再跑一次是幂等的
         self.assertTrue(all(a.status == "same" for a in core.materialize(clone)))
         # 冲突：默认不动，force 才覆盖并备份
-        (self.b.claude / "CLAUDE.md").write_text("mine\n")
+        (self.b.claude / "CLAUDE.md").write_text("mine\n", encoding="utf-8")
         self.assertEqual([a.status for a in core.materialize(clone)].count("conflict"), 1)
-        self.assertEqual((self.b.claude / "CLAUDE.md").read_text(), "mine\n")
+        self.assertEqual((self.b.claude / "CLAUDE.md").read_text(encoding="utf-8"), "mine\n")
         core.materialize(clone, force=True)
-        self.assertEqual((self.b.claude / "CLAUDE.md.hx-bak").read_text(), "mine\n")
+        self.assertEqual((self.b.claude / "CLAUDE.md.hx-bak").read_text(encoding="utf-8"), "mine\n")
         levels = [c.level for c in core.doctor(clone)]
         self.assertIn("fail", levels)                                      # 环境变量没设置
 
@@ -167,7 +175,7 @@ class FlowTest(Env, unittest.TestCase):
         dest = self.root / "work" / "imported"
         res = core.import_bundle(bundle, dest, restore_transcripts=True)
         self.assertEqual(res["transcripts_restored"], 1)
-        self.assertEqual((dest / "CLAUDE.md").read_text(), "# rules\n")
+        self.assertEqual((dest / "CLAUDE.md").read_text(encoding="utf-8"), "# rules\n")
         self.assertEqual(core.load_lock(dest)["snapshot"], r["snapshot"])
         self.assertTrue((self.b.claude / "projects" / project_slug(dest) / "s1.jsonl").is_file())
 
@@ -175,17 +183,17 @@ class FlowTest(Env, unittest.TestCase):
         r = core.save(self.project)                      # 没初始化过也能直接保存
         self.assertTrue(r["first"] and r["committed"])
         self.assertFalse(core.save(self.project)["committed"])
-        (self.a.claude / "skills/deploy/SKILL.md").write_text("v2\n")
+        (self.a.claude / "skills/deploy/SKILL.md").write_text("v2\n", encoding="utf-8")
         self.assertTrue(core.save(self.project)["committed"])
         self.assertEqual(core.log(self.project)[0]["subject"], "hx 保存：技能 1 项")
         # 载入：从 git 地址一步到位
         self.b.use()
         into = self.root / "elsewhere"
         into.mkdir()
-        dest = core.fetch_source(f"file://{self.project}", into)
+        dest = core.fetch_source(self.project.as_uri(), into)
         self.assertEqual(dest, into / "demo")
         core.materialize(dest)
-        self.assertEqual((self.b.claude / "skills/deploy/SKILL.md").read_text(), "v2\n")
+        self.assertEqual((self.b.claude / "skills/deploy/SKILL.md").read_text(encoding="utf-8"), "v2\n")
 
     def test_save_without_git_and_during_merge(self):
         plain = self.root / "plain"
@@ -195,8 +203,8 @@ class FlowTest(Env, unittest.TestCase):
         self.assertTrue((plain / ".harness/harness.lock.json").is_file())
         core.save(self.project)
         git_dir = self.project / ".git"
-        (git_dir / "MERGE_HEAD").write_text("0" * 40 + "\n")
-        (self.a.claude / "skills/deploy/SKILL.md").write_text("v3\n")
+        (git_dir / "MERGE_HEAD").write_text("0" * 40 + "\n", encoding="utf-8")
+        (self.a.claude / "skills/deploy/SKILL.md").write_text("v3\n", encoding="utf-8")
         r = core.save(self.project)
         self.assertEqual((r["committed"], r["reason"]), (False, "git-busy"))
 
@@ -217,16 +225,16 @@ class FlowTest(Env, unittest.TestCase):
         settings = self.project / ".claude/settings.json"
         r = core.team(self.project, True)
         self.assertTrue(r["enabled"] and r["committed"])
-        data = json.loads(settings.read_text())
+        data = json.loads(settings.read_text(encoding="utf-8"))
         self.assertTrue(data["enabledPlugins"]["hx@hx"])
         self.assertEqual(data["extraKnownMarketplaces"]["hx"]["source"]["source"], "github")
         self.assertEqual(core.team(self.project, True)["changed"], [])       # 重复开启不产生改动
         # 用户自己的设置要保留；文件有未提交的改动时不替用户提交
         data["permissions"] = {"allow": ["Bash(ls)"]}
-        settings.write_text(json.dumps(data))
+        settings.write_text(json.dumps(data), encoding="utf-8")
         r = core.team(self.project, False)
         self.assertFalse(r["enabled"] or r["committed"])
-        self.assertEqual(json.loads(settings.read_text()), {"permissions": {"allow": ["Bash(ls)"]}})
+        self.assertEqual(json.loads(settings.read_text(encoding="utf-8")), {"permissions": {"allow": ["Bash(ls)"]}})
 
     def test_import_rejects_unsafe_paths(self):
         bad = self.root / "bad.hxb"
@@ -243,9 +251,9 @@ class FlowTest(Env, unittest.TestCase):
         core.init(self.project)
         core.capture(self.project)
         lock_path = self.project / ".harness/harness.lock.json"
-        lock = json.loads(lock_path.read_text())
+        lock = json.loads(lock_path.read_text(encoding="utf-8"))
         next(e for e in lock["entries"] if e.get("target"))["target"] = "user:../../evil"
-        lock_path.write_text(json.dumps(lock))
+        lock_path.write_text(json.dumps(lock), encoding="utf-8")
         with self.assertRaises(HxError):
             core.materialize(self.project)
 
@@ -302,18 +310,18 @@ class CodexTest(Env, unittest.TestCase):
         cx = m.home / ".codex"
         cx.mkdir()
         if with_data:
-            (cx / "config.toml").write_text(CODEX_CONFIG)
-            (cx / "AGENTS.md").write_text("be terse\n")
+            (cx / "config.toml").write_text(CODEX_CONFIG, encoding="utf-8")
+            (cx / "AGENTS.md").write_text("be terse\n", encoding="utf-8")
             (cx / "skills/ship").mkdir(parents=True)
-            (cx / "skills/ship/SKILL.md").write_text("ship it\n")
+            (cx / "skills/ship/SKILL.md").write_text("ship it\n", encoding="utf-8")
             (cx / "skills/.system/x").mkdir(parents=True)
-            (cx / "skills/.system/x/SKILL.md").write_text("builtin\n")
+            (cx / "skills/.system/x/SKILL.md").write_text("builtin\n", encoding="utf-8")
             d = cx / "sessions/2026/02/01"
             d.mkdir(parents=True)
             (d / "rollout-2026-02-01T00-00-00-c1.jsonl").write_text(
-                codex_rollout(project, "c1", "add payments", "2026-02-01T00:05:00Z"))
+                codex_rollout(project, "c1", "add payments", "2026-02-01T00:05:00Z"), encoding="utf-8")
             (d / "rollout-2026-02-01T00-00-00-other.jsonl").write_text(
-                codex_rollout(self.root / "elsewhere", "other", "unrelated", "2026-02-01T00:06:00Z"))
+                codex_rollout(self.root / "elsewhere", "other", "unrelated", "2026-02-01T00:06:00Z"), encoding="utf-8")
         return m
 
     def test_codex_only_project(self):
@@ -326,7 +334,7 @@ class CodexTest(Env, unittest.TestCase):
         self.assertEqual(r["manifest"]["secrets"], ["API_TOKEN", "DB_PASSWORD", "GITHUB_TOKEN"])
         self.assertFalse((h / "agent/codex/user/skills/.system").exists())
         self.assertNotIn("/some/local/path", self.all_text(h / "agent/codex"))   # 本机路径不进包
-        digest = json.loads((h / "context/sessions/c1.json").read_text())
+        digest = json.loads((h / "context/sessions/c1.json").read_text(encoding="utf-8"))
         self.assertEqual((digest["agent"], digest["prompts"], digest["files_changed"], digest["models"]),
                          ("codex", ["add payments"], ["pay.py"], ["gpt-test"]))
         self.assertEqual(digest["last_reply"], "Patched.")
@@ -338,10 +346,10 @@ class CodexTest(Env, unittest.TestCase):
         m2 = self.codex_machine("cx2", clone, with_data=False)
         m2.use()
         core.materialize(clone)
-        cfg = parse_toml((m2.home / ".codex/config.toml").read_text())["mcp_servers"]
+        cfg = parse_toml((m2.home / ".codex/config.toml").read_text(encoding="utf-8"))["mcp_servers"]
         self.assertEqual(cfg["gh"], {"command": "git", "args": ["-y", "gh-mcp"], "env_vars": ["GITHUB_TOKEN"]})
         self.assertEqual(cfg["api"], {"url": "https://x.example/mcp", "bearer_token_env_var": "API_TOKEN"})
-        self.assertEqual((m2.home / ".codex/skills/ship/SKILL.md").read_text(), "ship it\n")
+        self.assertEqual((m2.home / ".codex/skills/ship/SKILL.md").read_text(encoding="utf-8"), "ship it\n")
         self.assertTrue(all(a.status == "same" for a in core.materialize(clone)))   # 幂等
 
     def test_claude_project_loaded_on_codex_machine(self):
@@ -354,9 +362,9 @@ class CodexTest(Env, unittest.TestCase):
         self.assertFalse((clone / "AGENTS.md").exists())                          # 预演不写文件
         self.assertTrue(any(a.status == "written" for a in plan))
         core.materialize(clone)
-        self.assertIn("CLAUDE.md", (clone / "AGENTS.md").read_text())             # 指路，不复制内容
-        self.assertEqual((m.home / ".codex/skills/deploy/SKILL.md").read_text(), "deploy\n")
-        cfg = parse_toml((m.home / ".codex/config.toml").read_text())["mcp_servers"]
+        self.assertIn("CLAUDE.md", (clone / "AGENTS.md").read_text(encoding="utf-8"))             # 指路，不复制内容
+        self.assertEqual((m.home / ".codex/skills/deploy/SKILL.md").read_text(encoding="utf-8"), "deploy\n")
+        cfg = parse_toml((m.home / ".codex/config.toml").read_text(encoding="utf-8"))["mcp_servers"]
         self.assertEqual(cfg["db"], {"command": "git", "env_vars": ["DB_PASSWORD"]})
         self.assertIn("gh", cfg)                                                  # 项目 .mcp.json 里的也转过去
         self.assertFalse((m.home / ".claude").exists())                           # 不给没装的 Agent 写东西
@@ -365,7 +373,7 @@ class CodexTest(Env, unittest.TestCase):
         m = self.codex_machine("cx", self.project)
         (self.project / "CLAUDE.md").unlink()
         (self.project / ".mcp.json").unlink()
-        (self.project / "AGENTS.md").write_text("# rules\n")
+        (self.project / "AGENTS.md").write_text("# rules\n", encoding="utf-8")
         sh(self.project, "git", "add", "-A")
         sh(self.project, "git", "commit", "-qm", "codex style")
         m.use()
@@ -374,9 +382,9 @@ class CodexTest(Env, unittest.TestCase):
         sh(self.root, "git", "clone", "-q", str(self.project), str(clone))
         self.b.use()                                                              # 机器 B：只有 Claude Code
         core.materialize(clone)
-        self.assertEqual((clone / "CLAUDE.md").read_text(), "@AGENTS.md\n@.harness/context/HANDOFF.md\n")
-        self.assertEqual((self.b.claude / "skills/ship/SKILL.md").read_text(), "ship it\n")
-        mcp = json.loads((clone / ".mcp.json").read_text())["mcpServers"]
+        self.assertEqual((clone / "CLAUDE.md").read_text(encoding="utf-8"), "@AGENTS.md\n@.harness/context/HANDOFF.md\n")
+        self.assertEqual((self.b.claude / "skills/ship/SKILL.md").read_text(encoding="utf-8"), "ship it\n")
+        mcp = json.loads((clone / ".mcp.json").read_text(encoding="utf-8"))["mcpServers"]
         self.assertEqual(mcp["api"]["headers"], {"Authorization": "Bearer ${API_TOKEN}"})
 
     def test_team_with_two_agents_keeps_everyones_work(self):
@@ -397,7 +405,7 @@ class CodexTest(Env, unittest.TestCase):
         self.assertEqual(sorted(p.name for p in (h / "context/sessions").iterdir()), ["c1.json", "s1.json"])
         self.assertEqual(set(r["lock"]["agents"]), {"claude-code", "codex"})
         self.assertIn("DB_PASSWORD", r["manifest"]["secrets"])
-        handoff = (h / "context/HANDOFF.md").read_text()
+        handoff = (h / "context/HANDOFF.md").read_text(encoding="utf-8")
         self.assertIn("add a login page", handoff)
         self.assertIn("add payments", handoff)
         self.assertEqual(core.doctor(clone)[1].level, "ok")                        # 文件与锁一致
@@ -416,11 +424,74 @@ class CodexTest(Env, unittest.TestCase):
         d = self.project / ".harness/context/sessions"
         d.mkdir(parents=True)
         for i in range(40):
-            (d / f"old{i:02d}.json").write_text(json.dumps({"id": f"old{i:02d}", "ended": f"2025-01-{i % 28 + 1:02d}T00:00:00Z"}))
+            (d / f"old{i:02d}.json").write_text(json.dumps({"id": f"old{i:02d}", "ended": f"2025-01-{i % 28 + 1:02d}T00:00:00Z"}), encoding="utf-8")
         core.capture(self.project)
         names = {p.name for p in d.iterdir()}
         self.assertEqual(len(names), 30)
         self.assertIn("s1.json", names)                                           # 最新的保留
+
+
+class CrossPlatformTest(Env, unittest.TestCase):
+    """不同操作系统之间的差异：换行符、路径写法。"""
+
+    def test_line_endings_do_not_count_as_changes(self):
+        self.assertEqual(sha256_bytes(b"a\r\nb\r\n"), sha256_bytes(b"a\nb\n"))
+        self.assertNotEqual(sha256_bytes(b"\x00\r\n"), sha256_bytes(b"\x00\n"))     # 二进制不动
+        # 机器 A 的个人技能是 Windows 换行
+        (self.a.claude / "skills/deploy/SKILL.md").write_bytes(b"deploy\r\nstep 2\r\n")
+        core.save(self.project)
+        packed = self.project / ".harness/agent/claude-code/user/skills/deploy/SKILL.md"
+        self.assertEqual(packed.read_bytes(), b"deploy\nstep 2\n")                 # 包里统一成 LF
+        self.assertEqual((self.project / ".harness/.gitattributes").read_bytes(), b"* -text\n")
+        # 模拟 Windows 上 git 把项目文件检出成 CRLF：不应被当成"改过"
+        (self.project / "CLAUDE.md").write_bytes(b"# rules\r\n")
+        packed.write_bytes(b"deploy\r\nstep 2\r\n")
+        titles = [c.title for c in core.doctor(self.project)]
+        self.assertFalse([t for t in titles if "改过" in t], titles)
+        # 本机已有的文件只是换行不同：算一致，不报冲突
+        skill = [a for a in core.materialize(self.project) if a.target.endswith("SKILL.md")]
+        self.assertEqual([a.status for a in skill], ["same"])
+        self.assertFalse(core.save(self.project)["committed"])                      # 也不产生新快照
+
+    def test_generated_files_use_lf_and_utf8(self):
+        core.save(self.project)
+        for p in (self.project / ".harness").rglob("*"):
+            if p.is_file():
+                data = p.read_bytes()
+                self.assertNotIn(b"\r\n", data, p)
+                data.decode("utf-8")
+
+    def test_windows_paths(self):
+        root = "C:\\Users\\Li\\proj"
+        self.assertEqual(relative_to_project("C:\\Users\\Li\\proj\\src\\new.py", root, ntpath), "src/new.py")
+        self.assertEqual(relative_to_project("c:/users/li/proj/a.py", root, ntpath), "a.py")   # 大小写、斜杠不同
+        self.assertEqual(relative_to_project("D:\\other\\a.py", root, ntpath), "D:\\other\\a.py")
+        self.assertEqual(path_key("C:\\Users\\Li\\proj\\", ntpath), path_key("c:/users/li/proj", ntpath))
+        # Claude Code 存放项目数据的目录名
+        self.assertEqual(re.sub(r"[^A-Za-z0-9]", "-", root), "C--Users-Li-proj")
+
+    def test_tool_arguments_with_windows_paths(self):
+        # 路径里的 \n（如 C:\new）不能被当成换行
+        m = Machine(self.root, "w")
+        f = m.home / "rollout-x.jsonl"
+        target = str(self.project / "new" / "notes.py")
+        lines = [
+            {"timestamp": "t1", "type": "session_meta", "payload": {"id": "w1", "cwd": str(self.project)}},
+            {"timestamp": "t2", "type": "response_item", "payload": {
+                "type": "function_call", "name": "apply_patch",
+                "arguments": json.dumps({"input": "*** Begin Patch\n*** Add File: " + target + "\n+x\n*** End Patch"})}},
+        ]
+        f.write_text("\n".join(json.dumps(x) for x in lines), encoding="utf-8")
+        self.assertEqual(digest_rollout(f, self.project)["files_changed"], ["new/notes.py"])
+
+    def test_output_survives_non_utf8_console(self):
+        # 模拟 Windows 上被别的程序接收输出：默认编码不是 UTF-8 时也不能报错
+        env = dict(os.environ, PYTHONIOENCODING="ascii", HX_HOME=str(self.a.home))
+        env.pop("PYTHONUTF8", None)
+        r = subprocess.run([sys.executable, "-m", "hx", "-C", str(self.project), "save"],
+                           capture_output=True, env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("已保存", r.stdout.decode("utf-8"))
 
 
 class RedactTest(unittest.TestCase):

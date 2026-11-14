@@ -408,7 +408,21 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _fix_output_encoding() -> None:
+    """Windows 上输出被别的程序接收时（比如 Agent 的钩子），默认编码不是 UTF-8，
+    中文和 ✓ 这样的符号会乱码甚至报错。这里统一成 UTF-8，写不出的字符用 ? 代替。"""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            if stream.isatty():
+                stream.reconfigure(errors="replace")
+            else:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
+
 def main(argv=None) -> int:
+    _fix_output_encoding()
     parser = build_parser()
     args = parser.parse_args(argv)
     if not getattr(args, "func", None):
@@ -418,6 +432,8 @@ def main(argv=None) -> int:
     except HxError as e:
         print(f"错误：{e}", file=sys.stderr)
         return 2
+    except BrokenPipeError:
+        return 0
 
 
 if __name__ == "__main__":

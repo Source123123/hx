@@ -17,7 +17,7 @@ from .adapters.base import Action, CaptureContext, Check, Neutral, place_file  #
 from .handoff import get_distiller
 from .redact import Redactor
 from .util import (HARNESS_DIR, LOCK, MANIFEST, HxError, home_dir, iter_files, read_json,
-                   sha256_bytes, write_json)
+                   sha256_bytes, write_json, write_text)
 
 # L1 运行环境文件：只引用，不解释
 ENV_FILES = (".devcontainer/devcontainer.json", ".devcontainer.json", "Dockerfile",
@@ -136,7 +136,7 @@ def init(project: Path, agent: str | None = None) -> dict:
         p = h / rel
         if not p.exists():
             p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text(text, encoding="utf-8")
+            write_text(p, text)
     return manifest
 
 
@@ -219,7 +219,10 @@ def capture(project: Path) -> dict:
     write_json(h / LOCK, lock)
     distill = get_distiller(manifest.get("distiller"))
     (h / "context").mkdir(parents=True, exist_ok=True)
-    (h / "context/HANDOFF.md").write_text(distill(h, manifest, lock), encoding="utf-8")
+    write_text(h / "context/HANDOFF.md", distill(h, manifest, lock))
+    # 不让 git 在 Windows 上把包里的文件换行改成 CRLF
+    if not (h / ".gitattributes").exists():
+        write_text(h / ".gitattributes", "* -text\n")
     return {"lock": lock, "manifest": manifest, "redactions": ctx.redactor.summary(),
             "skipped": ctx.skipped, "captured": captured}
 
@@ -531,7 +534,7 @@ def install_hook(project: Path) -> Path:
     hook = hooks / "prepare-commit-msg"
     existing = hook.read_text(encoding="utf-8") if hook.exists() else "#!/bin/sh\n"
     if HOOK_MARK not in existing:
-        hook.write_text(existing.rstrip("\n") + "\n\n" + HOOK_BODY, encoding="utf-8")
+        write_text(hook, existing.replace("\r\n", "\n").rstrip("\n") + "\n\n" + HOOK_BODY)
     hook.chmod(0o755)
     return hook
 
@@ -607,7 +610,7 @@ def fetch_source(source: str, into: Path) -> Path:
     if src.is_file():
         import_bundle(src.resolve(), into)
         return into
-    if "://" in source or source.startswith("git@") or source.endswith(".git"):
+    if src.is_dir() or "://" in source or source.startswith("git@") or source.endswith(".git"):
         trimmed = source.rstrip("/")
         trimmed = trimmed[:-4].rstrip("/") if trimmed.endswith(".git") else trimmed
         name = trimmed.rsplit("/", 1)[-1].rsplit(":", 1)[-1]

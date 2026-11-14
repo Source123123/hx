@@ -1,0 +1,3 @@
+bin/hx text eol=lf
+bin/hx.cmd text eol=crlf
+*.sh text eol=lf

@@ -10,7 +10,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..redact import Redactor
-from ..util import HARNESS_DIR, MAX_FILE_BYTES, decode_text, iter_files, sha256_bytes
+from ..util import (HARNESS_DIR, MAX_FILE_BYTES, decode_text, iter_files, normalize_newlines,
+                    sha256_bytes, write_text)
 
 # 锁文件条目的类别。adapter 可以用新的类别名，diff 会原样显示。
 CATEGORIES = ("env", "instructions", "settings", "skills", "agents", "commands",
@@ -90,6 +91,7 @@ class CaptureContext:
             data = self.redactor.text(text).encode("utf-8") if text is not None else data
         else:
             data = self.redactor.text(data).encode("utf-8")
+        data = normalize_newlines(data)     # 包里的文本一律 LF，在任何系统上都一样
         out = self.harness / dest
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_bytes(data)
@@ -111,7 +113,7 @@ class CaptureContext:
         text = json.dumps(digest, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
         out = self.harness / "context/sessions" / f"{digest['id']}.json"
         out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(self.redactor.text(text), encoding="utf-8")
+        write_text(out, self.redactor.text(text))
         self.sessions += 1
 
     def put_tree(self, src: Path, dest: str, category: str, target_prefix: str | None = None,
@@ -131,8 +133,8 @@ def place_file(data: bytes, dest: Path, force: bool, dry_run: bool = False) -> A
     dry_run 为真时不写文件，只返回将会发生什么。"""
     note = ""
     if dest.is_file():
-        if dest.read_bytes() == data:
-            return Action("same", str(dest))
+        if normalize_newlines(dest.read_bytes()) == normalize_newlines(data):
+            return Action("same", str(dest))    # 只有换行风格不同也算相同
         if not force:
             return Action("conflict", str(dest), "已有不同内容，未改动（加 --force 覆盖，原文件会备份）")
         note = "覆盖，原文件备份为 .hx-bak"

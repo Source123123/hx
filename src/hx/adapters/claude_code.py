@@ -16,7 +16,7 @@ import subprocess
 from collections import Counter
 from pathlib import Path
 
-from ..util import HARNESS_DIR, env_refs, read_json, write_json
+from ..util import HARNESS_DIR, env_refs, read_json, relative_to_project, write_json, write_text
 from .base import Action, Adapter, CaptureContext, Check, Neutral, place_file
 
 A = "agent/claude-code"          # 本 adapter 在 .harness/ 下的目录
@@ -223,7 +223,8 @@ class ClaudeCodeAdapter(Adapter):
         if not exe:
             return None
         try:
-            out = subprocess.run([exe, "--version"], capture_output=True, text=True, timeout=10).stdout
+            out = subprocess.run([exe, "--version"], capture_output=True, text=True, timeout=10,
+                                 encoding="utf-8", errors="replace").stdout
         except Exception:
             return None
         m = re.search(r"\d+\.\d+\.\d+", out)
@@ -336,7 +337,7 @@ class ClaudeCodeAdapter(Adapter):
             return []
         if settings:
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(settings, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            write_text(path, json.dumps(settings, ensure_ascii=False, indent=2) + "\n")
         else:
             path.unlink()
         return [".claude/settings.json"]
@@ -430,7 +431,7 @@ def digest_session(path: Path, project: Path) -> dict:
                         tools[block.get("name", "?")] += 1
                         fp = (block.get("input") or {}).get("file_path") or (block.get("input") or {}).get("notebook_path")
                         if block.get("name") in EDIT_TOOLS and isinstance(fp, str):
-                            rel = fp[len(root):].lstrip("/") if fp.startswith(root + "/") else fp
+                            rel = relative_to_project(fp, root)
                             if rel not in files:
                                 files.append(rel)
     return {

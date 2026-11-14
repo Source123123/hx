@@ -1,10 +1,17 @@
 #!/bin/sh
 # 插件自带的启动器：不需要 pip install，直接用仓库里的源码运行。
+# 适用于 macOS、Linux，以及 Windows 上的 Git Bash。Windows 的命令提示符用同目录的 hx.cmd。
 root="$(cd "$(dirname "$0")/.." && pwd)"
-for py in python3 python; do
-  if command -v "$py" >/dev/null 2>&1; then
-    PYTHONPATH="$root/src${PYTHONPATH:+:$PYTHONPATH}" exec "$py" -m hx "$@"
+case "$(uname -s 2>/dev/null)" in
+  MINGW*|MSYS*|CYGWIN*) command -v cygpath >/dev/null 2>&1 && root="$(cygpath -w "$root")"; sep=";" ;;
+  *) sep=":" ;;
+esac
+ok='import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)'
+for py in python3 python py; do
+  # Windows 上 python3 可能只是指向应用商店的空壳，所以要真的运行一下来确认
+  if command -v "$py" >/dev/null 2>&1 && "$py" -c "$ok" >/dev/null 2>&1; then
+    PYTHONPATH="$root/src${PYTHONPATH:+$sep$PYTHONPATH}" PYTHONUTF8=1 exec "$py" -m hx "$@"
   fi
 done
-echo "hx 需要 Python 3.9 或更高版本，但没有找到 python3。请先安装 Python：https://www.python.org/downloads/" >&2
+echo "hx 需要 Python 3.9 或更高版本，但没有找到。请先安装 Python：https://www.python.org/downloads/" >&2
 exit 127
