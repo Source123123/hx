@@ -85,6 +85,7 @@ python -m unittest discover -s tests
 - **不自动推送**：自动保存只做本地提交，且只提交 `.harness/`。
 - **不覆盖别人的内容**：本机没装的 Agent，它在包里的内容必须原样保留；本机已有的不同文件默认不覆盖。
 - **不要破坏 Claude Code 一侧**：现有测试必须全部通过；改了公共代码（`core.py`、`adapters/base.py`、`cli.py`）要跑全部测试。
+- **三个操作系统都要能用**：Windows 10/11、macOS、Linux。写文件用 `hx.util.write_text`（UTF-8、LF），比较内容用 `sha256_bytes` / `normalize_newlines`，比较路径用 `path_key` / `relative_to_project`，不要自己拼 `/` 或假设换行。你新加的钩子和命令入口在 Windows 上也要能调用（`bin/hx.cmd` 是给命令提示符用的启动器）。推送后看 GitHub Actions 的三系统测试是否全绿，见 `docs/DESIGN.md` 6.3。
 - 给用户看的文字用中文，说人话，不用内部术语。
 - 每完成一件事就更新 `PROGRESS.md` 并 `git commit`；全部完成后 `git push`。
 

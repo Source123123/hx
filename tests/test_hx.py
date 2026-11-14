@@ -484,6 +484,11 @@ class CrossPlatformTest(Env, unittest.TestCase):
         f.write_text("\n".join(json.dumps(x) for x in lines), encoding="utf-8")
         self.assertEqual(digest_rollout(f, self.project)["files_changed"], ["new/notes.py"])
 
+    def test_env_hint_per_os(self):
+        self.assertIn("setx MY_KEY", core.env_hint("MY_KEY", "win32"))
+        self.assertIn("~/.zshrc", core.env_hint("MY_KEY", "darwin"))
+        self.assertIn("export MY_KEY=", core.env_hint("MY_KEY", "linux"))
+
     def test_output_survives_non_utf8_console(self):
         # 模拟 Windows 上被别的程序接收输出：默认编码不是 UTF-8 时也不能报错
         env = dict(os.environ, PYTHONIOENCODING="ascii", HX_HOME=str(self.a.home))

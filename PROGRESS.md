@@ -15,8 +15,10 @@
 - [x] M7 团队一键接入 `hx team on/off`（11 个测试通过）
 
 - [x] M8（v0.3）多 Agent 核心、会话摘要全团队累积、Codex adapter、跨 Agent 交换（17 个测试通过）
+- [x] M9 跨操作系统：哈希忽略换行差异、统一 LF/UTF-8、Windows 路径、输出编码、Windows 启动器 bin/hx.cmd、三系统 CI（.github/workflows/test.yml）
 
 ## 已验证
+- 三个系统的自动测试（GitHub Actions）：Windows / macOS 的 Python 3.9 和 3.13、Ubuntu 的 3.13 全部通过，包括用 bin/hx（Git Bash）和 bin\\hx.cmd（命令提示符）实际执行保存。
 - Claude Code：机器 A 抓取 → 机器 B clone 后载入；导出 .hxb（含原始对话）→ 机器 C 导入：通过
 - 密钥不进包（settings env、MCP env/headers、文本里的 key、Codex config.toml 里写死的值）：通过
 - 从 GitHub 安装 Claude Code 插件（`claude plugin marketplace add` + `claude plugin install hx@hx`）：通过
@@ -35,7 +37,7 @@
 - 团队一键接入写入的 .claude/settings.json，没有在交互式会话里确认"同事打开项目时弹出安装提示"。
 - /hx:load 的多步交互流程没有在真实对话里跑过。
 - 还原的原始对话能否被 `claude --resume` 续上没有测（实验性）；Codex 的原始对话只导出、不还原。
-- 只在 Python 3.13 / Linux 上跑过测试。声明兼容 3.9，没有实测；Windows 没有测。
+- Windows 上 Claude Code 插件的钩子和 /hx:save 是否能正确调用 bin/hx 没有实测（CI 只验证了启动器本身在 Git Bash 和命令提示符下可用）。Windows 10 没有单独测，CI 用的是 Windows Server（与 Windows 11 同代内核）。
 - 同一种 Agent 的个人配置是"最后保存的人为准"（见 DESIGN 6.2）。
 
 ## 下一步

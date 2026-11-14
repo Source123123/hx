@@ -8,6 +8,7 @@ import io
 import json
 import os
 import shutil
+import sys
 import tarfile
 from pathlib import Path
 
@@ -393,6 +394,18 @@ def materialize(project: Path, force: bool = False, dry_run: bool = False) -> li
 
 # ---------- doctor ----------
 
+def env_hint(name: str, platform: str | None = None) -> str:
+    """按操作系统告诉用户怎么设置一个环境变量。"""
+    platform = platform or sys.platform
+    if platform.startswith("win"):
+        how = f'在命令提示符里运行 setx {name} "你的值"，然后重新打开终端和 Agent'
+    elif platform == "darwin":
+        how = f'在 ~/.zshrc 里加一行 export {name}="你的值"，然后重新打开终端和 Agent'
+    else:
+        how = f'在 ~/.bashrc（或你的 shell 配置文件）里加一行 export {name}="你的值"，然后重新打开终端和 Agent'
+    return f"这个项目的 Agent 配置需要它。{how}。"
+
+
 def doctor(project: Path) -> list:
     manifest, lock = load_manifest(project), load_lock(project)
     kinds = agent_kinds(manifest)
@@ -421,7 +434,7 @@ def doctor(project: Path) -> list:
         if os.environ.get(name):
             checks.append(Check("ok", f"环境变量 {name} 已设置"))
         else:
-            checks.append(Check("fail", f"环境变量 {name} 未设置", "这个项目的 Agent 配置需要它，请在本机设置。"))
+            checks.append(Check("fail", f"环境变量 {name} 未设置", env_hint(name)))
 
     if not here:
         checks.append(Check("fail", "这台机器上没有找到受支持的 Agent",

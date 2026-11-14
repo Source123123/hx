@@ -21,6 +21,27 @@ hx 认的是 Agent 程序，不是背后的模型。
 - 指令文件不复制内容，只生成一个指向原文件的入口（`CLAUDE.md` 里引用 `AGENTS.md`，或反过来），避免两份内容不一致。
 - 权限、钩子、插件这类各家不通用的设置不转换。
 
+## 支持哪些操作系统
+
+Windows 10、Windows 11、macOS、Linux 都支持，也可以跨系统迁移（比如在 Mac 上保存，在 Windows 上载入）。每次改动都会在这三类系统上自动跑一遍测试。
+
+| 系统 | 需要先装好 |
+|---|---|
+| Windows 10 / 11 | [Python](https://www.python.org/downloads/)（安装时勾选 "Add python.exe to PATH"）和 [Git for Windows](https://git-scm.com/download/win) |
+| macOS | 在终端运行一次 `xcode-select --install`，它会装好 git 和 Python |
+| Linux | 用系统的软件包管理器安装 `git` 和 `python3`（多数发行版已自带） |
+
+跨系统时 hx 替你处理的事：
+
+- **换行符**：Windows 和 Mac/Linux 的换行不同，hx 比较内容时会忽略这一点，不会把只有换行不同的文件当成"改过"。
+- **路径**：包里只存相对路径；会话摘要里"改了哪些文件"在三类系统上写法一致。
+- **中文**：所有文件用 UTF-8 保存，Windows 上输出不会乱码。
+
+需要你自己处理的事：
+
+- **环境变量**在每台机器上各设一次，`hx load` 会按你的系统告诉你具体怎么设。
+- MCP 服务器如果配置的是某台机器上的**绝对路径**（比如 `/usr/local/bin/某工具`），换系统后找不到，`hx load` 会指出来，需要在新机器上装好对应工具。
+
 ## 最简单的用法：装成 Claude Code 插件
 
 需要电脑上有 Python 3.9 以上和 git。在 Claude Code 里输入一次：
