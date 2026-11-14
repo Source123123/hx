@@ -2,6 +2,25 @@
 
 本项目的所有重要变更记录于此。格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.5.0] - 2026-11-14
+
+### 新增
+
+- **路径占位符**：包内文本中的本机项目路径和主目录路径保存为 `{{hx:project}}`、`{{hx:home}}`，载入时换成新机器的路径。
+- **私有词代称**：`hx private` 登记的词保存为 `[[代称]]`，对照表只存在本机。
+- **分享前检查**：`hx audit` 列出规则无法判断、需要人工确认的内容。
+- **可重建资源**：`hx resource` 登记向量库、索引等派生数据的重建方法；体检报告缺失或过期，并提示尚未登记的疑似向量库。
+- **外部状态声明**：`hx claim` 记录 Agent 的工作所依赖的外部状态；载入时自动核对或提醒核实。
+- **来源标记**：锁文件记录最近一次保存所在的系统和机器的匿名标识；在另一台机器上载入时给出提示。
+- **合并冲突自动解决**：两个分支各自保存后合并，`hx save` 自动解决 `.harness/` 中可机械处理的冲突。
+- 交接简报增加"阅读须知"，注明其中的记忆是历史记录而非当前事实，并列出待核实的外部状态和需要重建的数据。
+
+### 变更
+
+- **锁文件格式升级为版本 3。** 0.4 及更早的 hx 读取新格式时会提示升级。新版可以读取旧格式。
+- 遍历目录时跳过虚拟环境和各类缓存目录；单个目录最多复制 2000 个文件、50 MB。
+- 体检和载入的输出新增"说明"一级，用于不需要处理但值得知道的信息。
+
 ## [0.4.0] - 2026-11-14
 
 ### 新增
@@ -61,7 +80,8 @@
 - 命令：`init`、`capture`、`snapshot`、`log`、`diff`、`doctor`、`materialize`、`restore`、`export`、`import`、`hook`。
 - 密钥替换、文本脱敏、交接简报。
 
-[0.4.0]: https://github.com/Source123123/hx/compare/a948da9...main
+[0.5.0]: https://github.com/Source123123/hx/compare/da7051d...main
+[0.4.0]: https://github.com/Source123123/hx/compare/a948da9...da7051d
 [0.3.0]: https://github.com/Source123123/hx/compare/9453027...a948da9
 [0.2.0]: https://github.com/Source123123/hx/compare/0ce6517...9453027
 [0.1.0]: https://github.com/Source123123/hx/commit/0ce6517

@@ -3,7 +3,7 @@
 本文档定义 `.harness/` 目录的结构和其中各文件的格式。面向需要读取、生成或校验 hx 包的工具开发者。
 
 - 清单格式版本：`hx/v1`
-- 锁文件格式版本：`2`
+- 锁文件格式版本：`3`
 
 ## 1. 目录结构
 
@@ -25,6 +25,7 @@
     ├── intent.md               项目目标和设计思路。人工维护
     ├── tasks.md                进行中和待办。人工维护
     ├── decisions/              决策记录，一条一个文件。人工维护
+    ├── claims.json             外部状态声明（见第 9 节）
     ├── memory/                 Agent 的长期记忆
     ├── sessions/<id>.json      会话摘要（见第 4 节）
     └── HANDOFF.md              交接简报。自动生成，不计入快照 ID
@@ -34,6 +35,7 @@
 
 - 所有文本文件为 UTF-8 编码、LF 换行。
 - 所有路径为相对路径，使用 `/` 分隔。
+- 文本内容中的本机路径和私有名称以占位符表示（见第 10 节）。
 - `intent.md`、`tasks.md`、`decisions/` 由人或 Agent 维护，hx 不会覆盖。其余由 hx 生成。
 - 每个 Agent 只重写自己的 `agent/<名称>/` 目录。本机未安装的 Agent，其目录保持不变。
 
@@ -48,7 +50,11 @@
   "auto_save": true,
   "distiller": "builtin",
   "secrets": ["DB_PASSWORD", "GITHUB_TOKEN"],
-  "extra_secrets": []
+  "extra_secrets": [],
+  "resources": [
+    { "name": "docs-index", "path": ".rag/index", "sources": ["docs/**/*.md"],
+      "build": "python tools/build_index.py", "note": "向量模型 bge-small" }
+  ]
 }
 ```
 
@@ -63,6 +69,7 @@
 | `distiller` | 字符串 | 生成交接简报的提炼器，默认 `builtin` |
 | `secrets` | 字符串数组 | 运行所需的环境变量名。由 hx 在抓取时写入 |
 | `extra_secrets` | 字符串数组 | 人工追加的环境变量名，会并入 `secrets` |
+| `resources` | 对象数组 | 可重建资源。`name`、`path`（产物的相对路径）、`build`（重建命令）必填；`sources`（源文件通配符）、`note` 可选 |
 
 旧版清单使用 `"agent": {"kind": "claude-code"}` 表示单个 Agent，仍可读取。
 
@@ -70,8 +77,8 @@
 
 ```json
 {
-  "lockVersion": 2,
-  "hx": "0.4.0",
+  "lockVersion": 3,
+  "hx": "0.5.0",
   "snapshot": "23be233bba52",
   "agents": {
     "claude-code": { "version": "2.1.323", "model": "claude-opus-5-5" },
@@ -80,6 +87,8 @@
   "agent": { "kind": "claude-code", "version": "2.1.323" },
   "model": "claude-opus-5-5",
   "code_commit": "027930293cae36f81101046df63e0a0b217177e2",
+  "origin": { "platform": "macOS", "machine": "3f9a1c0e" },
+  "resources": { "docs-index": { "sources": 42, "sources_sha": "9b1d…" } },
   "entries": [
     { "path": "CLAUDE.md", "category": "instructions", "scope": "project",
       "agent": "claude-code", "sha256": "…" },
@@ -93,12 +102,14 @@
 
 | 字段 | 说明 |
 |---|---|
-| `lockVersion` | 锁文件格式版本。`1` 为单 Agent 格式，`2` 为多 Agent 格式。高于当前支持的版本时 hx 拒绝读取 |
+| `lockVersion` | 锁文件格式版本。`1`：单 Agent；`2`：多 Agent；`3`：包内文本使用占位符。高于当前支持的版本时 hx 拒绝读取 |
 | `hx` | 写入该锁文件的 hx 版本 |
 | `snapshot` | 快照 ID（见 3.3） |
 | `agents` | 每个 Agent 的版本和模型 |
 | `agent`、`model` | 最近一次实际执行抓取的 Agent 及其模型，用于提交标记和展示 |
 | `code_commit` | 抓取时最近一个改动了 `.harness/` 之外内容的提交 |
+| `origin` | 最近一次改变了内容的保存发生在哪：`platform` 为操作系统，`machine` 为机器与用户的匿名标识（不可反推主机名）。内容未变时沿用旧值 |
+| `resources` | 每个可重建资源在保存时的源文件数量；源文件不超过 2000 个时附带内容指纹 |
 | `entries` | 条目列表，按 `path` 排序 |
 
 ### 3.2 条目字段
@@ -121,7 +132,7 @@
 由此可得：
 
 - 内容相同则 ID 相同，与机器、操作系统、保存时间无关。
-- `code_commit` 和 `HANDOFF.md` 不参与计算。
+- `code_commit`、`origin`、`resources` 和 `HANDOFF.md` 不参与计算。
 
 ## 4. 会话摘要
 
@@ -205,8 +216,44 @@ transcripts/<agent>/<文件名>    可选。脱敏后的原始对话记录
 
 | 情形 | 行为 |
 |---|---|
-| 新版 hx 读取旧格式（`lockVersion` 1、清单使用 `agent.kind`） | 正常读取；再次保存时升级为当前格式 |
+| 新版 hx 读取旧格式（`lockVersion` 1 或 2、清单使用 `agent.kind`） | 正常读取；再次保存时升级为当前格式 |
 | 旧版 hx 读取更新的 `lockVersion` | 拒绝并提示升级 |
 | `apiVersion` 不一致 | 拒绝并提示升级 |
 | 未知的 `category` | 原样保留并在比较结果中显示 |
 | 条目缺少 `agent` | 带 `target` 的条目归属主 Agent |
+
+## 9. 外部状态声明 claims.json
+
+```json
+{
+  "claims": [
+    { "id": "c9824e5", "text": "测试库里有 ID 102 的订单" },
+    { "id": "c32000c", "text": "模型权重已下载", "check": { "type": "path", "value": "models/weights.bin" } }
+  ]
+}
+```
+
+| 字段 | 说明 |
+|---|---|
+| `id` | 由 `text` 的哈希得到，相同的说法只保留一条 |
+| `text` | 说法本身 |
+| `check` | 可选。`type` 为 `path`、`env` 或 `command`，`value` 为核对的对象 |
+
+核对只做存在性检查。实现不得因声明而执行任何命令。
+
+## 10. 占位符
+
+包内的文本使用以下占位符。写入包时替换，内容离开包时换回本机的值。
+
+| 占位符 | 含义 | 载入时 |
+|---|---|---|
+| `{{hx:project}}` | 项目根目录 | 换成本机的项目路径 |
+| `{{hx:home}}` | 用户主目录 | 换成本机的主目录 |
+| `[[代称]]` | 用户登记的私有词 | 本机对照表中有该代称则换回原词，否则保持不变 |
+
+规则：
+
+- 路径只在其后紧跟分隔符、引号、空白、标点或结尾时替换，前缀相同的其他路径不受影响。
+- 换回时一律使用 `/` 作为分隔符，在 JSON 和 TOML 中无需转义，在 Windows 上同样有效。
+- 条目的 `sha256` 按包内的占位符形式计算，因此在不同机器上往返不改变哈希。
+- 私有词对照表位于本机的 `~/.hx/terms.json`，不属于包的一部分。

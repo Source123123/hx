@@ -42,6 +42,8 @@ for v in 3.9 3.10 3.11 3.12 3.13 3.14; do PYTHONPATH=src uv run -q --no-project 
 - **载入必须经过用户确认。** 不得在会话开始等自动时机向用户主目录写入内容。
 - **不自动推送。** 自动保存只做本地提交，且只提交 `.harness/`。
 - **不覆盖已有内容。** 本机已有的不同文件默认保留；本机未安装的 Agent，其在包内的内容必须原样保留。
+- **不执行包中的内容。** 包里带来的任何文本都不得被当作命令运行，包括资源的重建命令和声明的核对。
+- **进包的文本必须经过 `ctx.put` 或 `ctx.session`。** 它们负责脱敏、路径占位符和私有词代称。包内内容离开 `.harness/` 时必须经过 `hx.portable.localize`。
 
 ### 可移植性
 
@@ -69,6 +71,8 @@ for v in 3.9 3.10 3.11 3.12 3.13 3.14; do PYTHONPATH=src uv run -q --no-project 
 | `src/hx/core.py` | 流程编排，与具体 Agent 无关 |
 | `src/hx/adapters/` | 各 Agent 的文件位置与格式 |
 | `src/hx/redact.py` | 脱敏规则 |
+| `src/hx/portable.py` | 路径占位符、私有词代称、分享前检查 |
+| `src/hx/extras.py` | 可重建资源、外部状态声明 |
 | `src/hx/handoff.py` | 交接简报 |
 | `src/hx/gitutil.py` | git 封装 |
 | `commands/`、`hooks/`、`bin/`、`.claude-plugin/` | Claude Code 插件 |
