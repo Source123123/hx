@@ -367,7 +367,7 @@ class CodexTest(Env, unittest.TestCase):
         self.assertTrue(any(a.status == "written" for a in plan))
         core.materialize(clone)
         self.assertIn("CLAUDE.md", (clone / "AGENTS.md").read_text(encoding="utf-8"))             # 指路，不复制内容
-        self.assertEqual((m.home / ".codex/skills/deploy/SKILL.md").read_text(encoding="utf-8"), "deploy\n")
+        self.assertEqual((clone / ".agents/skills/deploy/SKILL.md").read_text(encoding="utf-8"), "deploy\n")
         cfg = parse_toml((m.home / ".codex/config.toml").read_text(encoding="utf-8"))["mcp_servers"]
         self.assertEqual(cfg["db"], {"command": "git", "env_vars": ["DB_PASSWORD"]})
         self.assertIn("gh", cfg)                                                  # 项目 .mcp.json 里的也转过去

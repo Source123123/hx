@@ -1,9 +1,11 @@
 """OpenAI Codex CLI 的 adapter。
 
 抓取范围：
-  项目内（引用）：AGENTS.md、.codex/
+  项目内（引用）：AGENTS.md、AGENTS.override.md、.codex/config.toml、.agents/skills（兼容 .codex/skills）
   项目外（复制）：~/.codex/ 下的个人指令 AGENTS.md、技能、自定义提示词、config.toml（去掉 MCP 和本机路径后留作参考），
-                config.toml 里的 MCP 服务器，本项目的会话记录（提炼成摘要）
+                ~/.agents/skills、用户级及项目级 MCP、插件清单、本项目会话摘要。
+  核对：.codex/prompts 仍可用但已弃用；AGENTS.override.md 优先；项目配置仅在受信任时生效。
+  记忆：官方的 memories/、memories_v2/ 是用户级生成状态，无受支持的项目级还原接口，因此不打包。
 
 格式核对情况（2026-11-14，对照本机 codex-cli 0.167.0-alpha.4.1 完整会话）：
   已核对：CODEX_HOME、config.toml 的 [mcp_servers.*] 写法（command/args/env/env_vars/url/
@@ -24,7 +26,7 @@ from collections import Counter
 from pathlib import Path
 
 from ..util import HARNESS_DIR, env_refs, path_key, read_json, relative_to_project, write_text
-from ..portable import read_packed_json
+from ..portable import localize, read_packed_json
 from .base import Action, Adapter, CaptureContext, Check, Neutral, place_file
 
 A = "agent/codex"
@@ -47,7 +49,7 @@ class CodexAdapter(Adapter):
         return home / ".codex"
 
     def detect(self, project: Path, home: Path) -> bool:
-        return (project / "AGENTS.md").exists() or (project / ".codex").exists() or self.used_here(project, home)
+        return any((project / p).exists() for p in ("AGENTS.md", "AGENTS.override.md", ".codex", ".agents/skills")) or self.used_here(project, home)
 
     def used_here(self, project: Path, home: Path) -> bool:
         return bool(self._session_files(project, home, first_only=True))
@@ -78,27 +80,42 @@ class CodexAdapter(Adapter):
         for d in (".codex/skills", ".agents/skills"):
             ctx.ref_tree(d, "skills")
 
-        f = root / "AGENTS.md"
-        if f.is_file():
-            ctx.put(f"{A}/user/AGENTS.md", f.read_bytes(), "instructions", "user:AGENTS.md")
+        for name in ("AGENTS.md", "AGENTS.override.md"):
+            f = root / name
+            if f.is_file():
+                ctx.put(f"{A}/user/{name}", f.read_bytes(), "instructions", f"user:{name}")
         # skills/.system 是 Codex 自带的技能，装好就有，不用打包
         ctx.put_tree(root / "skills", f"{A}/user/skills", "skills", "user:skills", exclude=(".system",))
+        # 当前官方用户级技能位置；与旧版 CODEX_HOME/skills 分开保存，不能使用越界的 user:../ 目标。
+        ctx.put_tree(ctx.home / ".agents/skills", f"{A}/shared-skills", "skills")
         ctx.put_tree(root / "prompts", f"{A}/user/prompts", "commands", "user:prompts")
 
         config_text = _read(root / "config.toml")
         config = parse_toml(config_text)
         if config_text.strip():
             # 通用设置只留作参考，不自动还原：里面多是个人偏好和本机路径
-            kept = strip_sections(config_text, ("mcp_servers", "projects"))
+            kept = strip_sections(config_text, ("mcp_servers", "projects", "plugins", "marketplaces"))
             if kept.strip():
                 ctx.put(f"{A}/user/config.reference.toml", kept, "settings")
         servers = {}
-        for name, spec in (config.get("mcp_servers") or {}).items():
+        project_config = parse_toml(_read(ctx.project / ".codex/config.toml"))
+        effective = effective_mcp(config, project_config)
+        for name, spec in effective.items():
             if isinstance(spec, dict):
-                servers[name] = codex_to_neutral(spec, ctx)
+                scope = "project" if name in (project_config.get("mcp_servers") or {}) else "user"
+                servers[name] = codex_to_neutral(spec, ctx, name, scope)
         if servers:
             ctx.put(f"{A}/mcp.json",
                     json.dumps({"mcpServers": servers}, ensure_ascii=False, indent=2, sort_keys=True) + "\n", "mcp")
+
+        plugins = self._plugin_inventory(ctx.home, ctx.project)
+        if plugins is not None:
+            safe = [{k: p[k] for k in ("pluginId", "name", "marketplaceName", "version", "enabled", "source", "marketplaceSource")
+                     if k in p} for p in plugins if isinstance(p, dict) and p.get("installed", True)]
+            if safe:
+                ctx.put(f"{A}/plugins.json", json.dumps({"plugins": safe}, ensure_ascii=False, indent=2) + "\n", "plugins")
+        elif not os.environ.get("HX_HOME"):
+            ctx.skipped.append(("Codex 插件清单", "本机 codex plugin list --json 不可用，未记录插件"))
 
         latest = {}
         limit = int(ctx.options.get("max_sessions", 30))   # 0 表示不保存会话摘要
@@ -109,7 +126,7 @@ class CodexAdapter(Adapter):
                     ctx.session(digest)
                 latest = digest
         ctx.info["agent_version"] = self._cli_version() or latest.get("agent_version")
-        model = config.get("model")
+        model = project_config.get("model") or config.get("model")
         ctx.info["model"] = model if isinstance(model, str) else (latest.get("models") or [None])[-1]
 
     def _cli_version(self) -> str | None:
@@ -130,19 +147,29 @@ class CodexAdapter(Adapter):
 
     def materialize(self, project: Path, home: Path, lock: dict, force: bool, dry_run: bool = False) -> list:
         packed = read_packed_json(project / HARNESS_DIR / A / "mcp.json", project, home, {}) or {}
-        return merge_mcp_toml(self.user_root(home) / "config.toml", packed.get("mcpServers") or {}, dry_run)
+        servers = packed.get("mcpServers") or {}
+        actions = merge_mcp_toml(self.user_root(home) / "config.toml",
+                                 {n: s for n, s in servers.items() if s.get("x-hx-scope") != "project"}, dry_run)
+        actions += merge_mcp_toml(project / ".codex/config.toml",
+                                  {n: s for n, s in servers.items() if s.get("x-hx-scope") == "project"}, dry_run)
+        base = project / HARNESS_DIR / A / "shared-skills"
+        if base.is_dir():
+            for p in sorted(x for x in base.rglob("*") if x.is_file()):
+                actions.append(place_file(localize(p.read_bytes(), project, home),
+                                          home / ".agents/skills" / p.relative_to(base), force, dry_run))
+        return actions
 
     def export_neutral(self, project: Path) -> Neutral:
         n = Neutral()
         h = project / HARNESS_DIR / A
-        for base in (project / ".codex/skills", project / ".agents/skills", h / "user/skills"):
+        for base in (project / ".codex/skills", project / ".agents/skills", h / "user/skills", h / "shared-skills"):
             if base.is_dir():
                 for p in sorted(x for x in base.rglob("*") if x.is_file()):
                     n.skills[p.relative_to(base).as_posix()] = p.read_bytes()
         for name, spec in ((read_json(h / "mcp.json", {}) or {}).get("mcpServers") or {}).items():
-            if isinstance(spec, dict):
+            if isinstance(spec, dict) and spec.get("x-hx-enabled") is not False:
                 n.mcp[name] = {k: v for k, v in spec.items() if not k.startswith("x-hx-")}
-        n.instructions = [f for f in ("AGENTS.md",) if (project / f).is_file()]
+        n.instructions = [f for f in ("AGENTS.override.md", "AGENTS.md") if _read(project / f).strip()][:1]
         return n
 
     def adopt(self, project: Path, home: Path, neutral: Neutral, force: bool, dry_run: bool = False) -> list:
@@ -154,7 +181,7 @@ class CodexAdapter(Adapter):
             lines += [f"- `{f}`" for f in neutral.instructions]
             lines += ["", "项目当前的进展和待办见交接简报：`.harness/context/HANDOFF.md`。", ""]
             actions.append(place_file("\n".join(lines).encode(), project / "AGENTS.md", force, dry_run))
-        root = self.user_root(home) / "skills"
+        root = project / ".agents/skills"
         for rel, data in sorted(neutral.skills.items()):
             actions.append(place_file(data, root / rel, force, dry_run))
         actions += merge_mcp_toml(self.user_root(home) / "config.toml", neutral.mcp, dry_run)
@@ -173,7 +200,10 @@ class CodexAdapter(Adapter):
         else:
             checks.append(Check("ok", f"Codex CLI 已安装（{have or '版本未知'}）"))
         config = parse_toml(_read(self.user_root(home) / "config.toml"))
-        for name, spec in sorted((config.get("mcp_servers") or {}).items()):
+        project_config = parse_toml(_read(project / ".codex/config.toml"))
+        for name, spec in sorted(effective_mcp(config, project_config).items()):
+            if isinstance(spec, dict) and spec.get("enabled") is False:
+                continue
             cmd = spec.get("command") if isinstance(spec, dict) else None
             if not cmd:
                 continue
@@ -181,7 +211,39 @@ class CodexAdapter(Adapter):
                 checks.append(Check("ok", f"MCP 服务器 {name}：命令 {cmd} 可用"))
             else:
                 checks.append(Check("fail", f"MCP 服务器 {name}：找不到命令 {cmd}", f"请安装 {cmd}"))
+        wanted = (read_packed_json(project / HARNESS_DIR / A / "plugins.json", project, home, {}) or {}).get("plugins") or []
+        if wanted:
+            installed = self._plugin_inventory(home, project)
+            if installed is None:
+                checks.append(Check("warn", "无法读取本机 Codex 插件清单", "运行 codex plugin list --json 检查，必要时升级 Codex。"))
+            else:
+                have_plugins = {p.get("pluginId"): p for p in installed if isinstance(p, dict) and p.get("installed", True)}
+                for p in wanted:
+                    key = p.get("pluginId")
+                    have_plugin = have_plugins.get(key)
+                    if not have_plugin:
+                        checks.append(Check("warn", f"缺少 Codex 插件：{key}", f"先添加可信插件市场，再运行 codex plugin add {key}；来源见 .harness/agent/codex/plugins.json。"))
+                    elif p.get("enabled", True) and not have_plugin.get("enabled", True):
+                        checks.append(Check("warn", f"Codex 插件未启用：{key}", "在 Codex 插件设置中启用。"))
+                    elif p.get("version") and have_plugin.get("version") != p["version"]:
+                        checks.append(Check("warn", f"Codex 插件版本不同：{key}", f"本机 {have_plugin.get('version')}，快照 {p['version']}。"))
         return checks
+
+    def _plugin_inventory(self, home: Path, project: Path) -> list | None:
+        """使用 CLI 的公开 JSON，避免猜测私有缓存布局；模拟主目录时不接触真实安装。"""
+        if os.environ.get("HX_HOME"):
+            return []
+        exe = shutil.which("codex")
+        if not exe:
+            return None
+        try:
+            result = subprocess.run([exe, "plugin", "list", "--json"], cwd=project,
+                                    env=dict(os.environ, CODEX_HOME=str(self.user_root(home))),
+                                    capture_output=True, text=True, timeout=15, encoding="utf-8", errors="replace")
+            data = json.loads(result.stdout)
+            return data["installed"] if result.returncode == 0 and isinstance(data, dict) and isinstance(data.get("installed"), list) else None
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            return None
 
     def transcripts(self, project: Path, home: Path) -> list:
         return self._session_files(project, home)
@@ -189,7 +251,7 @@ class CodexAdapter(Adapter):
 
 # ---------- MCP：Codex 写法 <-> 中立写法 ----------
 
-def codex_to_neutral(spec: dict, ctx: CaptureContext) -> dict:
+def codex_to_neutral(spec: dict, ctx: CaptureContext, name: str = "server", scope: str = "user") -> dict:
     """Codex 的 MCP 服务器配置 -> 中立写法（与 .mcp.json 相同，密钥一律写成 ${NAME}）。"""
     out: dict = {}
     if isinstance(spec.get("url"), str):
@@ -197,7 +259,9 @@ def codex_to_neutral(spec: dict, ctx: CaptureContext) -> dict:
         out["url"] = ctx.redactor.text(spec["url"])
         headers = {}
         for h, v in (spec.get("http_headers") or {}).items():
-            headers[h] = ctx.redactor.text(str(v))
+            var = "MCP_" + re.sub(r"[^A-Za-z0-9]", "_", name + "_" + h).upper()
+            headers[h] = "${%s}" % var
+            ctx.secrets.add(var)
         for h, var in (spec.get("env_http_headers") or {}).items():
             headers[h] = "${%s}" % var
             ctx.secrets.add(var)
@@ -220,13 +284,27 @@ def codex_to_neutral(spec: dict, ctx: CaptureContext) -> dict:
                 ctx.secrets.add(k)
         if env:
             out["env"] = env
-    out["x-hx-scope"] = "user"
+    if spec.get("enabled") is False:
+        out["x-hx-enabled"] = False
+    out["x-hx-scope"] = scope
     return out
+
+
+def effective_mcp(user: dict, project: dict) -> dict:
+    """Codex 配置按字段分层合并；项目同名服务器仅覆盖它声明的字段。"""
+    def merge(a, b):
+        out = dict(a)
+        for key, value in b.items():
+            out[key] = merge(out[key], value) if isinstance(out.get(key), dict) and isinstance(value, dict) else value
+        return out
+    return merge(user.get("mcp_servers") or {}, project.get("mcp_servers") or {})
 
 
 def neutral_to_codex(spec: dict) -> tuple:
     """中立写法 -> Codex 的配置表。返回 (表, 无法表达而丢掉的项)。"""
     out, dropped = {}, []
+    if spec.get("x-hx-enabled") is False:
+        out["enabled"] = False
     if isinstance(spec.get("url"), str):
         out["url"] = spec["url"]
         literal, from_env = {}, {}
@@ -303,7 +381,7 @@ def merge_mcp_toml(config: Path, servers: dict, dry_run: bool = False) -> list:
     existing = (parse_toml(text).get("mcp_servers") or {})
     actions, blocks = [], []
     for name, spec in sorted(servers.items()):
-        table, dropped = neutral_to_codex({k: v for k, v in spec.items() if not k.startswith("x-hx-")})
+        table, dropped = neutral_to_codex(spec)
         label = f"{config}#mcp_servers.{name}"
         if name in existing:
             same = {k: v for k, v in existing[name].items() if v not in (None, [], {})} == table

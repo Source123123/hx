@@ -40,7 +40,6 @@
 - 外部状态声明要靠人或 Agent 主动记录；Agent 是否会按 /hx:save 的提示去记，没有在真实会话里观察过。
 - 可重建资源的新旧判断用文件修改时间（和 make 一样），git 检出会刷新修改时间，可能把已是最新的产物报成"过期"。
 - 没有做真实的 MCP 连通性检查：体检只看命令是否存在，不启动 MCP 服务器。
-- Codex 的项目级技能目录、prompts 目录、AGENTS.override.md、项目级 config.toml 的 MCP：按推测写，未核对。
 - Codex 没有"一键"体验（插件、钩子、团队接入）；Codex 的通用设置只留作参考、不还原。
 - 跨 Agent 转过去的技能和指令入口，没有在真实的 Agent 会话里确认"确实被用上了"。
 - 团队一键接入写入的 .claude/settings.json，没有在交互式会话里确认"同事打开项目时弹出安装提示"。
@@ -69,3 +68,14 @@
 - tests/fixtures/codex-real-rollout.jsonl 是裁短脱敏的真实文件；tests/test_hx.py 的构造同步更新。
 - 初始安装和全部 35 项测试通过；新增 2 项真实记录回归测试通过，原有 Codex 相关测试通过。
 - 限制：任意 shell 命令是否修改文件无法可靠推断；旧版直接工具形状保留构造测试，未在本机另装旧版生成。
+
+### 2. 其余格式核对
+- 官方当前约定和本机真实会话均确认 `.agents/skills` 是项目级技能位置。本机版本也发现 `.codex/skills` 和 CODEX_HOME/skills 中的兼容技能，保留旧位置；新增抓取 ~/.agents/skills，跨 Agent 新技能写入项目 `.agents/skills`。
+- 实际会话执行了 probe-current 和 probe-user-legacy 技能，输出 CURRENT_SKILL_OK、LEGACY_USER_OK；全局和项目 AGENTS.override.md 都优先于同层 AGENTS.md，输出 GLOBAL_OVERRIDE_OK、PROJECT_OVERRIDE_OK。
+- 官方确认 ~/.codex/prompts 仍是旧自定义提示词目录，但已弃用；继续保存旧内容，新入口改用技能。未在交互式提示菜单另测旧提示词。
+- 项目 `.codex/config.toml` 的 MCP 纳入按字段合并、保存、跨 Agent 导出及体检；项目来源仍还原到项目，不提升为用户全局配置。项目必须由用户信任后才会加载。
+- 用户级覆盖指令原先漏存，已补齐；MCP HTTP 请求头原先依赖通用脱敏，短密钥可能漏掉，现全部改成环境变量名。
+- 插件使用本机 `codex plugin list --json` 的公开接口，记录名字、版本和来源，体检报告缺失、禁用和版本差异；不复制插件凭证、不自动安装插件。不支持此 CLI 的版本会明确提示。
+- Codex 有用户级生成记忆（memories / memories_v2），官方没有安全的按项目抓取和还原约定；不把其他项目的全局记忆混入包。本机 memories 功能默认关闭，未开启后台生成。
+- 全部 41 项测试通过（含 Claude Code 和旧格式兼容）；新增项目 MCP、短密钥、技能、覆盖指令、插件和后备 TOML 解析测试。
+- 官方依据（2026-11-14）：https://learn.chatgpt.com/docs/build-skills 、https://learn.chatgpt.com/docs/custom-prompts 、https://learn.chatgpt.com/docs/agent-configuration/agents-md 、https://learn.chatgpt.com/docs/config-file/config-advanced 、https://learn.chatgpt.com/docs/customization/memories 。

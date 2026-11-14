@@ -20,7 +20,9 @@
 │   │   └── plugins.json        已安装插件清单
 │   └── codex/
 │       ├── user/               来自 ~/.codex：AGENTS.md、skills/、prompts/、config.reference.toml
-│       └── mcp.json            MCP 服务器（中立写法）
+│       ├── shared-skills/      来自 ~/.agents/skills，载入时放回该目录
+│       ├── plugins.json        codex plugin list --json 的已安装清单，仅用于体检
+│       └── mcp.json            用户级和项目级 MCP 服务器（中立写法）
 └── context/
     ├── intent.md               项目目标和设计思路。人工维护
     ├── tasks.md                进行中和待办。人工维护
@@ -186,6 +188,17 @@
 | `headers` 中的字面值 | `http_headers = { H = "…" }` |
 
 以 `x-hx-` 开头的键为 hx 内部使用，还原时移除。
+
+Codex 的 `x-hx-scope` 为 `user` 或 `project`，决定还原至用户级或项目级
+`.codex/config.toml`；缺省按旧格式当作用户级。配置按字段合并后保存项目的有效 MCP。
+`x-hx-enabled: false` 保留禁用状态，跨 Agent 导出时跳过这些服务器。
+HTTP 字面请求头一律改为 `${MCP_<服务器>_<请求头>}`（非字母数字改成下划线并大写），
+只登记变量名。项目里的原始配置仍是引用，不会被 hx 自动替换。
+
+`agent/codex/plugins.json` 包含 `plugins` 数组，每项保留公开 CLI 输出中的
+`pluginId`、`name`、`marketplaceName`、`version`、`enabled`、`source`、`marketplaceSource`。
+来源会经过脱敏和路径占位符处理；清单没有还原目标，不会自动安装或启用插件。
+这些均为可选内容，锁文件格式仍为 3，旧清单和旧锁文件仍可读取。
 
 ## 6. 提交标记
 
