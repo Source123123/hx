@@ -1,8 +1,25 @@
 # hx — 把 Agent 开发环境打包、版本化、迁移
 
-用 Agent（目前支持 Claude Code）做项目时，真正决定产出的除了代码，还有 Agent 的配置和它积累的上下文：个人指令、skills、MCP 服务器、插件、记忆、聊过的内容。这些大多散落在你自己机器的主目录里，换一台机器或者交给同事就没了。
+用 Agent（目前支持 Claude Code 和 OpenAI Codex CLI）做项目时，真正决定产出的除了代码，还有 Agent 的配置和它积累的上下文：个人指令、skills、MCP 服务器、插件、记忆、聊过的内容。这些大多散落在你自己机器的主目录里，换一台机器或者交给同事就没了。
 
 hx 把它们收进项目里的 `.harness/` 目录，用 git 记录每一次变化，并能在另一台机器上还原。
+
+## 支持哪些 Agent
+
+| Agent | 保存 / 载入 | 一键（插件、自动保存） |
+|---|---|---|
+| Claude Code | 支持 | 支持 |
+| OpenAI Codex CLI | 支持（命令行 `hx save` / `hx load`） | 还没有 |
+| 在 Claude Code 或 Codex 里换用别家模型（如 DeepSeek） | 支持，和上面一样 | 同上 |
+
+hx 认的是 Agent 程序，不是背后的模型。
+
+**可以混用。** 一个项目可以同时登记多个 Agent：同事 A 用 Claude Code、同事 B 用 Codex，各自 `hx save`，谁的内容都不会被对方覆盖，会话摘要合在同一份交接简报里。如果项目是用另一种 Agent 保存的，`hx load` 会把能通用的部分转过来：
+
+- 技能（两边都是 `SKILL.md` 格式）直接复制。
+- MCP 服务器在 `.mcp.json` 和 Codex 的 `config.toml` 之间转换，密钥保持用环境变量传入。
+- 指令文件不复制内容，只生成一个指向原文件的入口（`CLAUDE.md` 里引用 `AGENTS.md`，或反过来），避免两份内容不一致。
+- 权限、钩子、插件这类各家不通用的设置不转换。
 
 ## 最简单的用法：装成 Claude Code 插件
 
@@ -81,12 +98,13 @@ hx load https://github.com/你/你的项目
   harness.json          清单：Agent 类型、需要哪些环境变量
   harness.lock.json     锁文件：每个文件的哈希、Agent 版本、模型、对应的代码提交
   agent/claude-code/    从 ~/.claude 复制来的个人指令、设置、skills、agents、MCP、插件清单
+  agent/codex/          从 ~/.codex 复制来的个人指令、skills、提示词、MCP
   context/
     intent.md           项目目标和设计思路 —— 你来写
     tasks.md            进行中和待办 —— 你来写
     decisions/          决策记录 —— 你来写
     memory/             Agent 的记忆
-    sessions/           每次会话的摘要：提了什么要求、改了哪些文件、最后的答复
+    sessions/           每次会话的摘要：提了什么要求、改了哪些文件、最后的答复（全团队累积，保留最近 30 个）
     HANDOFF.md          自动生成的交接简报
 ```
 
@@ -111,7 +129,9 @@ hx load https://github.com/你/你的项目
 - 不保证 Agent 在新机器上做出同样的结果。模型有随机性，hx 保证的是配置和上下文一致。
 - 不安装系统依赖。请用 Dev Container、Nix 或 Docker，hx 会记录这些文件的哈希。
 - 不自动安装项目用到的其他插件，载入时会告诉你缺哪些。
-- 目前只支持 Claude Code。接入其他 Agent 见 [docs/EXTENDING.md](docs/EXTENDING.md)。
+- ChatGPT 网页版或 App 里的对话不在本机，hx 打包不了。
+- Codex 的通用设置（`config.toml` 里 MCP 以外的部分）只保存作参考，不会自动还原。
+- 接入其他 Agent 见 [docs/EXTENDING.md](docs/EXTENDING.md)。
 
 ## 文档
 

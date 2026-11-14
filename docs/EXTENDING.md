@@ -40,8 +40,12 @@ class MyAgentAdapter(Adapter):
 
 - `ctx.ref(路径, 类别)`：项目内已有的文件，只记哈希。
 - `ctx.put(包内路径, 内容, 类别, target)`：项目外的内容，复制进包并自动脱敏。`target` 为 `user:相对路径` 或 `project:相对路径`；带 `target` 的文件由核心统一还原，你不用写还原代码。
-- 只有需要合并而不是整文件覆盖的内容（比如 MCP 配置）才需要实现 `materialize`。
-- 会话摘要写到 `context/sessions/<id>.json`，字段与 `claude_code.digest_session` 的返回值保持一致，交接简报才能读懂：`id, started, ended, git_branch, agent_version, models, prompts, files_changed, tool_counts, last_reply`。
+- `ctx.session(摘要)`：登记一个会话摘要。字段与 `claude_code.digest_session` 的返回值一致：`id, started, ended, git_branch, agent_version, models, prompts, files_changed, tool_counts, last_reply`。摘要全团队累积，核心负责去重和只保留最近的。
+- `used_here(project, home)`：这台机器上是否真的用这个 Agent 做过这个项目（一般看有没有会话记录）。返回真时 `hx save` 会自动把你的 Agent 加进项目清单。
+- `available(home)`：这台机器是否装了这个 Agent，默认看 `user_root` 目录在不在。没装时抓取和还原都跳过。
+- 只有需要合并而不是整文件覆盖的内容（比如 MCP 配置）才需要实现 `materialize`。它必须支持 `dry_run`：预演时不能写文件。
+- 跨 Agent：实现 `export_neutral(project)` 把包里属于你的技能、MCP、指令文件导出成 `Neutral`；实现 `adopt(project, home, neutral, force, dry_run)` 接收别的 Agent 的内容。MCP 的中立写法就是 `.mcp.json` 的写法，密钥为 `${NAME}`。写文件请用 `hx.adapters.base.place_file`，它统一处理冲突、备份和预演。
+- 完整的参考实现：`src/hx/adapters/codex.py`（会话不按项目分目录、配置是 TOML）和 `src/hx/adapters/claude_code.py`。
 
 在你的包的 `pyproject.toml` 里注册：
 

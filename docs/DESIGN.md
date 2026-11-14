@@ -43,7 +43,7 @@ Agent 的配置分散在两处：
 .harness/
   harness.json            总清单：Agent 类型、模型、需要的密钥、环境文件
   harness.lock.json       锁文件：每个文件的哈希、插件和工具版本、对应的代码提交
-  agent/<adapter>/
+  agent/<adapter>/        每个 Agent 一个目录，如 agent/claude-code/、agent/codex/
     user/                 从项目外复制来的配置（指令、skills、agents、commands、settings）
     mcp.json              规范化后的 MCP 服务器声明，密钥写成 ${NAME}
     plugins.json          已安装插件清单（名字、来源、版本）
@@ -99,6 +99,19 @@ git push（或 hx export 成包文件）          hx materialize   还原 Agent 
 
 自动载入故意不做：载入会把项目带来的设置写进用户的主目录，其中可以包含钩子命令。如果打开一个仓库就自动写入，恶意仓库就能借此在用户机器上执行代码。所以载入必须有一次明确的确认。
 
+## 6.2 多个 Agent 与跨 Agent
+
+- `harness.json` 的 `agents` 是一个列表。`hx save` 时，如果发现这台机器上用另一个受支持的 Agent 做过这个项目（有它的会话记录），自动加进列表。
+- 抓取时逐个 adapter 处理。**这台机器上没装的 Agent 直接跳过，它在包里的内容和锁文件条目原样沿用。** 所以用 Codex 的同事保存时，不会抹掉用 Claude Code 的同事留下的配置。
+- 锁文件的每个条目带 `agent` 字段，记录它属于谁；`agents` 字段记录每个 Agent 的版本和模型。
+- 会话摘要全团队累积在 `context/sessions/`，每条带 `agent` 字段，只保留最近 `max_sessions` 个（更早的在 git 历史里）。
+- 还原时只处理本机装了的 Agent。本机装了、但包里没有它内容的 Agent，走"接收"流程：
+  其他 adapter 用 `export_neutral()` 导出中立内容（技能文件、MCP 规范、指令文件路径），本机 adapter 用 `adopt()` 接收。这样 N 个 Agent 只需要 N 个 adapter，不需要两两写转换。
+- MCP 的中立写法就是 `.mcp.json` 的写法，密钥一律是 `${NAME}`。Codex 那边对应 `env_vars`、`bearer_token_env_var`、`env_http_headers`。
+- 指令文件不复制内容，只生成入口文件指向原文件。
+
+已知取舍：同一个 Agent 的个人配置（如个人技能）是"最后保存的人为准"。两个人都用 Claude Code 时，后保存的人的个人技能会替换包里的那份；因为他载入时已经拿到了前一个人的技能，通常是并集，但如果他没载入就保存，前一个人的会从当前快照里消失（git 历史里还在）。
+
 ## 7. 安全
 
 - 所有复制进包的文本都经过脱敏器：已知格式的密钥（API key、token、私钥块）和名字像密钥的配置值都被替换为占位符。
@@ -120,7 +133,8 @@ git push（或 hx export 成包文件）          hx materialize   还原 Agent 
 ## 9. 路线图
 
 - **v0.1**：Claude Code adapter；init / capture / snapshot / log / diff / doctor / materialize / export / import / hook。
-- **v0.2（当前）**：一键 save / load；Claude Code 插件；会话结束自动保存。
-- **v0.3**：第二个 adapter（Codex 或 Cursor），验证中立格式；指令文件在 `CLAUDE.md` 和 `AGENTS.md` 之间转换。
+- **v0.2**：一键 save / load；Claude Code 插件；会话结束自动保存。
+- **v0.3（当前）**：Codex adapter；一个项目多个 Agent；跨 Agent 交换技能、MCP、指令入口；会话摘要全团队累积。
+- **待办**：Codex 侧的一键（插件、钩子）；在真实 Codex 会话上核对会话文件格式。
 - **v0.4**：LLM 提炼器（从会话中自动抽取决策和待办）；上下文的三方合并。
 - **v0.5**：OCI 分发；团队服务端（浏览 harness 历史、按 harness 对比产出质量）。
