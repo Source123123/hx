@@ -449,7 +449,7 @@ class CrossPlatformTest(Env, unittest.TestCase):
         titles = [c.title for c in core.doctor(self.project)]
         self.assertFalse([t for t in titles if "改过" in t], titles)
         # 本机已有的文件只是换行不同：算一致，不报冲突
-        skill = [a for a in core.materialize(self.project) if a.target.endswith("SKILL.md")]
+        skill = [a for a in core.materialize(self.project, dry_run=True) if a.target.endswith("SKILL.md")]
         self.assertEqual([a.status for a in skill], ["same"])
         self.assertFalse(core.save(self.project)["committed"])                      # 也不产生新快照
 
