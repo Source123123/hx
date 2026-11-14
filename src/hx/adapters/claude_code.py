@@ -17,7 +17,7 @@ from collections import Counter
 from pathlib import Path
 
 from ..util import HARNESS_DIR, env_refs, read_json, write_json
-from .base import Action, Adapter, CaptureContext, Check
+from .base import Action, Adapter, CaptureContext, Check, Neutral, place_file
 
 A = "agent/claude-code"          # 本 adapter 在 .harness/ 下的目录
 USER_TREES = {                   # ~/.claude/ 下的目录 -> 类别
@@ -48,7 +48,8 @@ def project_slug(project: Path) -> str:
 
 class ClaudeCodeAdapter(Adapter):
     name = "claude-code"
-    generated_dirs = (A, "context/memory", "context/sessions")
+    title = "Claude Code"
+    generated_dirs = (A, "context/memory")
 
     # ---------- 路径 ----------
 
@@ -68,7 +69,11 @@ class ClaudeCodeAdapter(Adapter):
 
     def detect(self, project: Path, home: Path) -> bool:
         return ((project / "CLAUDE.md").exists() or (project / ".claude").exists()
-                or self._project_data(project, home).exists())
+                or self.used_here(project, home))
+
+    def used_here(self, project: Path, home: Path) -> bool:
+        d = self._project_data(project, home)
+        return d.is_dir() and any(d.glob("*.jsonl"))
 
     # ---------- capture ----------
 
@@ -207,8 +212,7 @@ class ClaudeCodeAdapter(Adapter):
             digest = digest_session(f, ctx.project)
             if not digest["prompts"] and not digest["files_changed"]:
                 continue
-            ctx.put(f"context/sessions/{digest['id']}.json",
-                    json.dumps(digest, ensure_ascii=False, indent=2, sort_keys=True) + "\n", "sessions")
+            ctx.session(digest)
             latest = digest
         return latest
 
@@ -227,39 +231,43 @@ class ClaudeCodeAdapter(Adapter):
 
     # ---------- materialize ----------
 
-    def materialize(self, project: Path, home: Path, lock: dict, force: bool) -> list:
-        actions = []
-        actions += self._merge_mcp(project)
+    def materialize(self, project: Path, home: Path, lock: dict, force: bool, dry_run: bool = False) -> list:
+        packed = read_json(project / HARNESS_DIR / A / "mcp.json", {}) or {}
+        actions = merge_mcp_json(project, packed.get("mcpServers") or {}, dry_run)
         # 记忆放回 Claude Code 为"新路径下的这个项目"准备的目录
         src = project / HARNESS_DIR / "context/memory"
         dst = self._project_data(project, home) / "memory"
         if src.is_dir():
-            from ..core import place_file
             for p in sorted(x for x in src.rglob("*") if x.is_file()):
-                actions.append(place_file(p.read_bytes(), dst / p.relative_to(src), force))
+                actions.append(place_file(p.read_bytes(), dst / p.relative_to(src), force, dry_run))
         return actions
 
-    def _merge_mcp(self, project: Path) -> list:
-        packed = read_json(project / HARNESS_DIR / A / "mcp.json", {}) or {}
-        servers = packed.get("mcpServers") or {}
-        if not servers:
-            return []
-        target = project / ".mcp.json"
-        current = read_json(target, {}) or {}
-        existing = current.setdefault("mcpServers", {})
-        actions, changed = [], False
-        for name, spec in sorted(servers.items()):
-            spec = {k: v for k, v in spec.items() if not k.startswith("x-hx-")}
-            if name not in existing:
-                existing[name] = spec
-                changed = True
-                actions.append(Action("written", f".mcp.json#{name}", "MCP 服务器已加入项目配置"))
-            elif existing[name] == spec:
-                actions.append(Action("same", f".mcp.json#{name}"))
-            else:
-                actions.append(Action("conflict", f".mcp.json#{name}", "项目里已有同名但不同的 MCP 服务器，未改动"))
-        if changed:
-            write_json(target, current)
+    # ---------- 跨 Agent ----------
+
+    def export_neutral(self, project: Path) -> Neutral:
+        n = Neutral()
+        h = project / HARNESS_DIR / A
+        for base in (project / ".claude/skills", h / "user/skills"):
+            if base.is_dir():
+                for p in sorted(x for x in base.rglob("*") if x.is_file()):
+                    n.skills[p.relative_to(base).as_posix()] = p.read_bytes()
+        for f in (h / "mcp.json", project / ".mcp.json"):
+            for name, spec in ((read_json(f, {}) or {}).get("mcpServers") or {}).items():
+                if isinstance(spec, dict):
+                    n.mcp[name] = {k: v for k, v in spec.items() if not k.startswith("x-hx-")}
+        n.instructions = [f for f in ("CLAUDE.md", ".claude/CLAUDE.md") if (project / f).is_file()]
+        return n
+
+    def adopt(self, project: Path, home: Path, neutral: Neutral, force: bool, dry_run: bool = False) -> list:
+        actions = []
+        if neutral.instructions and not any((project / f).is_file() for f in ("CLAUDE.md", ".claude/CLAUDE.md")):
+            # Claude Code 支持用 @ 引入别的文件，所以只写引用，内容不会两头不一致
+            body = "".join(f"@{f}\n" for f in neutral.instructions) + "@.harness/context/HANDOFF.md\n"
+            actions.append(place_file(body.encode(), project / "CLAUDE.md", force, dry_run))
+        root = self.user_root(home) / "skills"
+        for rel, data in sorted(neutral.skills.items()):
+            actions.append(place_file(data, root / rel, force, dry_run))
+        actions += merge_mcp_json(project, neutral.mcp, dry_run)
         return actions
 
     # ---------- doctor ----------
@@ -341,6 +349,29 @@ class ClaudeCodeAdapter(Adapter):
 
     def transcript_dir(self, project: Path, home: Path) -> Path:
         return self._project_data(project, home)
+
+
+def merge_mcp_json(project: Path, servers: dict, dry_run: bool = False) -> list:
+    """把 MCP 服务器并入项目的 .mcp.json：只添加没有的，同名但不同的不动。"""
+    if not servers:
+        return []
+    target = project / ".mcp.json"
+    current = read_json(target, {}) or {}
+    existing = current.setdefault("mcpServers", {})
+    actions, changed = [], False
+    for name, spec in sorted(servers.items()):
+        spec = {k: v for k, v in spec.items() if not k.startswith("x-hx-")}
+        if name not in existing:
+            existing[name] = spec
+            changed = True
+            actions.append(Action("written", f".mcp.json#{name}", "MCP 服务器加入项目配置"))
+        elif existing[name] == spec:
+            actions.append(Action("same", f".mcp.json#{name}"))
+        else:
+            actions.append(Action("conflict", f".mcp.json#{name}", "项目里已有同名但不同的 MCP 服务器，未改动"))
+    if changed and not dry_run:
+        write_json(target, current)
+    return actions
 
 
 # ---------- 会话摘要 ----------

@@ -13,7 +13,7 @@ from pathlib import Path
 
 from . import __version__, gitutil
 from .adapters import all_adapters, get_adapter
-from .adapters.base import Action, CaptureContext, Check
+from .adapters.base import Action, CaptureContext, Check, Neutral, place_file  # noqa: F401
 from .handoff import get_distiller
 from .redact import Redactor
 from .util import (HARNESS_DIR, LOCK, MANIFEST, HxError, home_dir, iter_files, read_json,
@@ -73,6 +73,21 @@ def load_manifest(project: Path) -> dict:
     return m
 
 
+def agent_kinds(manifest: dict) -> list:
+    """这个项目登记了哪些 Agent。旧版清单只有一个 agent.kind。"""
+    kinds = manifest.get("agents")
+    if isinstance(kinds, list) and kinds:
+        return list(kinds)
+    return [(manifest.get("agent") or {}).get("kind") or "claude-code"]
+
+
+def entry_agent(entry: dict, kinds: list) -> str | None:
+    """条目属于哪个 Agent。旧版锁文件没有这个字段，算给第一个 Agent。"""
+    if entry.get("agent"):
+        return entry["agent"]
+    return kinds[0] if entry.get("target") else None
+
+
 def load_lock(project: Path) -> dict:
     lock = read_json(harness_dir(project) / LOCK)
     if not isinstance(lock, dict):
@@ -83,7 +98,7 @@ def load_lock(project: Path) -> dict:
 def snapshot_id(lock: dict) -> str:
     """快照 ID：由 Agent、模型和所有条目的哈希算出。内容相同则 ID 相同。"""
     basis = {
-        "agent": lock.get("agent"), "model": lock.get("model"),
+        "agents": lock.get("agents") or {"": {"agent": lock.get("agent"), "model": lock.get("model")}},
         "entries": sorted((e["path"], e["sha256"]) for e in lock.get("entries", [])),
     }
     return sha256_bytes(json.dumps(basis, sort_keys=True, ensure_ascii=False).encode())[:12]
@@ -96,15 +111,21 @@ def init(project: Path, agent: str | None = None) -> dict:
     if (h / MANIFEST).exists():
         raise HxError("这个项目已经初始化过了。")
     home = home_dir()
-    if not agent:
-        detected = [n for n, cls in sorted(all_adapters().items()) if cls().detect(project, home)]
-        agent = detected[0] if detected else "claude-code"
-    get_adapter(agent)  # 名字不对会在这里报错
+    if agent:
+        kinds = [a.strip() for a in agent.split(",") if a.strip()]
+    else:
+        adapters = {n: cls() for n, cls in sorted(all_adapters().items())}
+        kinds = [n for n, a in adapters.items() if a.used_here(project, home)] \
+            or [n for n, a in adapters.items() if a.detect(project, home) and a.available(home)] \
+            or [n for n, a in adapters.items() if a.available(home)][:1] \
+            or ["claude-code"]
+    for k in kinds:
+        get_adapter(k)  # 名字不对会在这里报错
     manifest = {
         "apiVersion": "hx/v1",
         "name": project.resolve().name,
-        "agent": {"kind": agent},
-        "capture": {"max_sessions": 20, "handoff_sessions": 5},
+        "agents": kinds,
+        "capture": {"max_sessions": 30, "handoff_sessions": 5},
         "auto_save": True,
         "distiller": "builtin",
         "secrets": [],
@@ -122,18 +143,56 @@ def init(project: Path, agent: str | None = None) -> dict:
 # ---------- capture ----------
 
 def capture(project: Path) -> dict:
-    """抓取当前的 Agent 环境，重写 .harness/ 里自动生成的部分和锁文件。"""
-    manifest = load_manifest(project)
-    adapter = get_adapter(manifest["agent"]["kind"])
-    h = harness_dir(project)
-    for d in adapter.generated_dirs:
-        shutil.rmtree(h / d, ignore_errors=True)
+    """抓取当前的 Agent 环境，重写 .harness/ 里自动生成的部分和锁文件。
 
-    ctx = CaptureContext(project=project, home=home_dir(), redactor=Redactor(),
+    清单里登记的每个 Agent 依次抓取。这台机器上没装的 Agent 会跳过，
+    包里别人为它保存的内容原样保留。
+    """
+    manifest = load_manifest(project)
+    kinds = agent_kinds(manifest)
+    h = harness_dir(project)
+    home = home_dir()
+    previous = read_json(h / LOCK, {}) or {}
+    prev_agents = previous.get("agents") or {}
+
+    ctx = CaptureContext(project=project, home=home, redactor=Redactor(),
                          options=manifest.get("capture") or {})
     for f in ENV_FILES:
         ctx.ref(f, "env")
-    adapter.capture(ctx)
+
+    agents, captured = {}, []
+    for kind in kinds:
+        adapter = get_adapter(kind)
+        if not adapter.available(home):
+            # 没装：沿用上一次锁文件里属于它的条目（文件还在才算）
+            for e in previous.get("entries", []):
+                if e.get("agent") == kind and (project / e["path"]).is_file():
+                    e = dict(e)
+                    e["sha256"] = sha256_bytes((project / e["path"]).read_bytes())
+                    ctx.entries.append(e)
+            if kind in prev_agents:
+                agents[kind] = prev_agents[kind]
+            continue
+        for d in adapter.generated_dirs:
+            shutil.rmtree(h / d, ignore_errors=True)
+        ctx.agent, ctx.info = kind, {}
+        adapter.capture(ctx)
+        agents[kind] = {"version": ctx.info.get("agent_version"), "model": ctx.info.get("model")}
+        captured.append(kind)
+    ctx.agent = ""
+
+    # 会话摘要按团队累积，只保留最近的若干个
+    keep = int((manifest.get("capture") or {}).get("max_sessions", 30))
+    digests = []
+    for p in iter_files(h / "context/sessions"):
+        d = read_json(p) if p.suffix == ".json" else None
+        digests.append(((d or {}).get("ended") or "", p))
+    digests.sort(key=lambda x: x[0], reverse=True)
+    for _, p in digests[keep:]:
+        p.unlink()
+    for _, p in digests[:keep]:
+        ctx.entries.append({"path": p.relative_to(project).as_posix(), "category": "sessions",
+                            "scope": "bundle", "sha256": sha256_bytes(p.read_bytes())})
 
     # 人工维护的上下文也登记进锁文件，这样改了意图或决策会产生新的快照
     for rel in ("context/intent.md", "context/tasks.md"):
@@ -141,24 +200,28 @@ def capture(project: Path) -> dict:
     for p in iter_files(h / "context/decisions"):
         _register_context(ctx, p)
 
+    # "当前 Agent"：这台机器上实际抓取到的那个；都没装就沿用上一次的
+    active = captured[0] if captured else (previous.get("agent") or {}).get("kind") or kinds[0]
     lock = {
-        "lockVersion": 1,
+        "lockVersion": 2,
         "hx": __version__,
-        "agent": {"kind": adapter.name, "version": ctx.info.get("agent_version")},
-        "model": ctx.info.get("model"),
+        "agents": agents,
+        "agent": {"kind": active, "version": (agents.get(active) or {}).get("version")},
+        "model": (agents.get(active) or {}).get("model"),
         "code_commit": gitutil.code_head(project, HARNESS_DIR) if gitutil.is_repo(project) else None,
         "entries": sorted(ctx.entries, key=lambda e: e["path"]),
     }
     lock["snapshot"] = snapshot_id(lock)
 
-    manifest["secrets"] = sorted(set(ctx.secrets) | set(manifest.get("extra_secrets") or []))
+    manifest["secrets"] = sorted(set(ctx.secrets) | set(manifest.get("extra_secrets") or [])
+                                 | (set(manifest.get("secrets") or []) if len(captured) < len(kinds) else set()))
     write_json(h / MANIFEST, manifest)
     write_json(h / LOCK, lock)
     distill = get_distiller(manifest.get("distiller"))
     (h / "context").mkdir(parents=True, exist_ok=True)
     (h / "context/HANDOFF.md").write_text(distill(h, manifest, lock), encoding="utf-8")
     return {"lock": lock, "manifest": manifest, "redactions": ctx.redactor.summary(),
-            "skipped": ctx.skipped}
+            "skipped": ctx.skipped, "captured": captured}
 
 
 def _register_context(ctx: CaptureContext, path: Path) -> None:
@@ -272,19 +335,6 @@ def diff(a: dict, b: dict) -> dict:
 
 # ---------- materialize ----------
 
-def place_file(data: bytes, dest: Path, force: bool) -> Action:
-    """把内容写到 dest。已有不同内容时默认不动；force 时先备份再覆盖。"""
-    if dest.is_file():
-        if dest.read_bytes() == data:
-            return Action("same", str(dest))
-        if not force:
-            return Action("conflict", str(dest), "已有不同内容，未改动（加 --force 覆盖，原文件会备份）")
-        shutil.copy2(dest, dest.with_name(dest.name + ".hx-bak"))
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_bytes(data)
-    return Action("written", str(dest))
-
-
 def _target_path(target: str, project: Path, user_root: Path) -> Path:
     scope, _, rel = target.partition(":")
     base = {"user": user_root, "project": project}.get(scope)
@@ -297,28 +347,44 @@ def _target_path(target: str, project: Path, user_root: Path) -> Path:
 
 
 def materialize(project: Path, force: bool = False, dry_run: bool = False) -> list:
-    """把包里的 Agent 配置还原到这台机器上。"""
+    """把包里的 Agent 配置还原到这台机器上。
+
+    只处理这台机器上装了的 Agent。如果某个装了的 Agent 在包里没有自己的内容
+    （项目是别人用另一个 Agent 保存的），就把别的 Agent 的技能、MCP、指令转给它。
+    """
     manifest, lock = load_manifest(project), load_lock(project)
-    adapter = get_adapter(manifest["agent"]["kind"])
+    kinds = agent_kinds(manifest)
     home = home_dir()
+    adapters = {n: cls() for n, cls in all_adapters().items()}
+    here = [n for n in sorted(adapters) if adapters[n].available(home)]
+    captured = set(lock.get("agents") or {}) | {e["agent"] for e in lock.get("entries", []) if e.get("agent")}
     actions = []
-    for e in lock.get("entries", []):
-        if not e.get("target"):
+    for kind in kinds:
+        adapter = adapters.get(kind)
+        if adapter is None or kind not in here:
             continue
-        src = project / e["path"]
-        dest = _target_path(e["target"], project, adapter.user_root(home))
-        if not src.is_file():
-            actions.append(Action("skipped", str(dest), f"包里缺少 {e['path']}"))
+        for e in lock.get("entries", []):
+            if not e.get("target") or entry_agent(e, kinds) != kind:
+                continue
+            src = project / e["path"]
+            dest = _target_path(e["target"], project, adapter.user_root(home))
+            if not src.is_file():
+                actions.append(Action("skipped", str(dest), f"包里缺少 {e['path']}"))
+                continue
+            actions.append(place_file(src.read_bytes(), dest, force, dry_run))
+        actions += adapter.materialize(project, home, lock, force, dry_run)
+    # 跨 Agent：本机有、但包里没有它内容的 Agent，接收其他 Agent 的内容
+    sources = [k for k in kinds if k in captured and k in adapters]
+    for kind in here:
+        if kind in captured or not sources:
             continue
-        data = src.read_bytes()
-        if dry_run:
-            status = "same" if dest.is_file() and dest.read_bytes() == data else \
-                     "conflict" if dest.is_file() else "written"
-            actions.append(Action(status, str(dest), "（预演）"))
-        else:
-            actions.append(place_file(data, dest, force))
-    if not dry_run:
-        actions += adapter.materialize(project, home, lock, force)
+        neutral = Neutral()
+        for k in sources:
+            n = adapters[k].export_neutral(project)
+            neutral.skills.update(n.skills)
+            neutral.mcp.update(n.mcp)
+            neutral.instructions += [i for i in n.instructions if i not in neutral.instructions]
+        actions += adapters[kind].adopt(project, home, neutral, force, dry_run)
     return actions
 
 
@@ -326,9 +392,11 @@ def materialize(project: Path, force: bool = False, dry_run: bool = False) -> li
 
 def doctor(project: Path) -> list:
     manifest, lock = load_manifest(project), load_lock(project)
-    adapter = get_adapter(manifest["agent"]["kind"])
+    kinds = agent_kinds(manifest)
     home = home_dir()
-    checks = [Check("ok", f"harness 快照 {lock.get('snapshot')}（{adapter.name}，模型 {lock.get('model') or '未知'}）")]
+    adapters = {n: cls() for n, cls in all_adapters().items()}
+    here = [n for n in sorted(adapters) if adapters[n].available(home)]
+    checks = [Check("ok", f"harness 快照 {lock.get('snapshot')}（{'、'.join(kinds)}，模型 {lock.get('model') or '未知'}）")]
 
     missing, drifted = [], []
     for e in lock.get("entries", []):
@@ -342,7 +410,7 @@ def doctor(project: Path) -> list:
                             "仓库不完整，或者这些文件在快照之后被删了。"))
     if drifted:
         checks.append(Check("warn", f"{len(drifted)} 个文件在快照之后改过：{', '.join(drifted[:5])}{' …' if len(drifted) > 5 else ''}",
-                            "运行 hx snapshot 记录新的状态。"))
+                            "运行 hx save 记录新的状态。"))
     if not missing and not drifted:
         checks.append(Check("ok", f"{len(lock.get('entries', []))} 个文件与锁文件一致"))
 
@@ -350,17 +418,22 @@ def doctor(project: Path) -> list:
         if os.environ.get(name):
             checks.append(Check("ok", f"环境变量 {name} 已设置"))
         else:
-            checks.append(Check("fail", f"环境变量 {name} 未设置", "这个 harness 需要它，请在本机设置。"))
+            checks.append(Check("fail", f"环境变量 {name} 未设置", "这个项目的 Agent 配置需要它，请在本机设置。"))
 
-    checks += adapter.doctor(project, home, manifest, lock)
+    if not here:
+        checks.append(Check("fail", "这台机器上没有找到受支持的 Agent",
+                            f"请安装其中之一：{'、'.join(a.title for a in adapters.values())}"))
+    for kind in here:
+        if kind in kinds or not any(k in here for k in kinds):
+            checks += adapters[kind].doctor(project, home, manifest, lock)
 
     pending = [a for a in materialize(project, dry_run=True) if a.status != "same"]
     if pending:
         conflicts = sum(1 for a in pending if a.status == "conflict")
-        checks.append(Check("warn", f"{len(pending)} 个配置文件还没有还原到本机（其中 {conflicts} 个与本机已有文件不同）",
-                            "运行 hx materialize。"))
+        checks.append(Check("warn", f"{len(pending)} 项配置还没有载入本机（其中 {conflicts} 项与本机已有文件不同）",
+                            "运行 hx load。"))
     else:
-        checks.append(Check("ok", "包里的配置都已还原到本机"))
+        checks.append(Check("ok", "包里的配置都已载入本机"))
     return checks
 
 
@@ -372,7 +445,6 @@ BUNDLE_META = "hx-bundle.json"
 def export_bundle(project: Path, out: Path, include_transcripts: bool = False) -> dict:
     """导出成一个自包含的 .hxb 文件（tar.gz）：.harness/ + 锁文件引用的项目文件 + 可选的原始对话。"""
     manifest, lock = load_manifest(project), load_lock(project)
-    adapter = get_adapter(manifest["agent"]["kind"])
     files = {p.relative_to(project).as_posix() for p in iter_files(harness_dir(project))}
     files |= {e["path"] for e in lock.get("entries", []) if (project / e["path"]).is_file()}
     redactor = Redactor()
@@ -384,15 +456,16 @@ def export_bundle(project: Path, out: Path, include_transcripts: bool = False) -
             info.mode = 0o644
             tar.addfile(info, io.BytesIO(data))
         meta = {"format": 1, "name": manifest.get("name"), "snapshot": lock.get("snapshot"),
-                "agent": lock.get("agent"), "transcripts": include_transcripts}
+                "agents": agent_kinds(manifest), "transcripts": include_transcripts}
         add(BUNDLE_META, json.dumps(meta, ensure_ascii=False, indent=2).encode())
         for rel in sorted(files):
             add(f"project/{rel}", (project / rel).read_bytes())
         if include_transcripts:
-            for p in adapter.transcripts(project, home_dir()):
-                text = p.read_text(encoding="utf-8", errors="replace")
-                add(f"transcripts/{p.name}", redactor.text(text).encode("utf-8"))
-                n_transcripts += 1
+            for kind in agent_kinds(manifest):
+                for p in get_adapter(kind).transcripts(project, home_dir()):
+                    text = p.read_text(encoding="utf-8", errors="replace")
+                    add(f"transcripts/{kind}/{p.name}", redactor.text(text).encode("utf-8"))
+                    n_transcripts += 1
     return {"files": len(files), "transcripts": n_transcripts, "redactions": redactor.summary(),
             "snapshot": lock.get("snapshot")}
 
@@ -419,16 +492,16 @@ def import_bundle(bundle: Path, project: Path, force: bool = False,
                 meta = json.loads(data)
             elif parts[0] == "project" and len(parts) > 1:
                 actions.append(place_file(data, project.joinpath(*parts[1:]), force))
-            elif parts[0] == "transcripts" and len(parts) == 2:
-                transcripts[parts[1]] = data
+            elif parts[0] == "transcripts" and len(parts) == 3:
+                transcripts[(parts[1], parts[2])] = data
     if meta is None:
         raise HxError("这不是一个 hx 包（缺少 hx-bundle.json）。")
     restored = 0
     if restore_transcripts and transcripts:
-        adapter = get_adapter(load_manifest(project)["agent"]["kind"])
-        dest = adapter.transcript_dir(project, home_dir())
-        if dest:
-            for name, data in transcripts.items():
+        adapters = all_adapters()
+        for (kind, name), data in transcripts.items():
+            dest = adapters[kind]().transcript_dir(project, home_dir()) if kind in adapters else None
+            if dest:
                 restored += place_file(data, dest / name, force).status == "written"
     return {"meta": meta, "actions": actions, "transcripts_in_bundle": len(transcripts),
             "transcripts_restored": restored}
@@ -494,6 +567,16 @@ def save(project: Path, message: str | None = None, push: bool = False) -> dict:
     first = not (harness_dir(project) / MANIFEST).exists()
     if first:
         init(project)
+    else:
+        # 这台机器上如果用另一个 Agent 做过这个项目，自动把它加进清单
+        manifest = load_manifest(project)
+        kinds = agent_kinds(manifest)
+        added = [n for n, cls in sorted(all_adapters().items())
+                 if n not in kinds and cls().used_here(project, home_dir())]
+        if added:
+            manifest["agents"] = kinds + added
+            manifest.pop("agent", None)
+            write_json(harness_dir(project) / MANIFEST, manifest)
     is_repo = gitutil.is_repo(project)
     previous = None
     if is_repo:
@@ -544,22 +627,28 @@ def team(project: Path, enable: bool | None) -> dict:
     """开关团队一键接入。enable 为 None 时只查询。
     改动的文件如果此前没有未提交的修改，就单独提交它，这样 push 之后同事马上能用。"""
     manifest = load_manifest(project)
-    adapter = get_adapter(manifest["agent"]["kind"])
+    adapters = [get_adapter(k) for k in agent_kinds(manifest)]
     if enable is None:
-        return {"enabled": adapter.team_enabled(project), "changed": [], "committed": False}
+        return {"enabled": any(a.team_enabled(project) for a in adapters), "changed": [], "committed": False}
     is_repo = gitutil.is_repo(project)
     dirty_before = set()
     if is_repo:
         out = gitutil.git(project, "status", "--porcelain", "-z")
         dirty_before = {item[3:] for item in out.split("\0") if item}
-    changed = adapter.team_setup(project, enable)
-    if changed is None:
-        raise HxError(f"{adapter.name} 还不支持团队一键接入。")
+    changed, supported = [], False
+    for a in adapters:
+        r = a.team_setup(project, enable)
+        if r is not None:
+            supported = True
+            changed += r
+    if not supported:
+        raise HxError("这个项目用的 Agent 还不支持团队一键接入。")
     committed = False
-    clean = [f for f in changed if f not in dirty_before and not any(d.endswith("/") and f.startswith(d) for d in dirty_before)]
+    clean = [f for f in changed if f not in dirty_before
+             and not any(d.endswith("/") and f.startswith(d) for d in dirty_before)]
     if is_repo and changed and len(clean) == len(changed) and not git_busy(project):
         gitutil.git(project, "add", "-A", "--", *changed)
         gitutil.git(project, "commit", "-q", "-m",
                     f"hx：{'开启' if enable else '关闭'}团队一键接入", "--", *changed)
         committed = True
-    return {"enabled": adapter.team_enabled(project), "changed": changed, "committed": committed}
+    return {"enabled": any(a.team_enabled(project) for a in adapters), "changed": changed, "committed": committed}

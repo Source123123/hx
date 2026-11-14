@@ -7,7 +7,8 @@ from .base import Adapter
 
 def _builtin() -> dict[str, type]:
     from .claude_code import ClaudeCodeAdapter
-    return {ClaudeCodeAdapter.name: ClaudeCodeAdapter}
+    from .codex import CodexAdapter
+    return {ClaudeCodeAdapter.name: ClaudeCodeAdapter, CodexAdapter.name: CodexAdapter}
 
 
 def all_adapters() -> dict[str, type]:

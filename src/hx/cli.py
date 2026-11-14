@@ -36,7 +36,7 @@ def _print_capture(result: dict) -> None:
 def cmd_init(args) -> int:
     project = _project(args)
     manifest = core.init(project, args.agent)
-    print(f"已在 {project / HARNESS_DIR} 初始化 harness（Agent：{manifest['agent']['kind']}）。")
+    print(f"已在 {project / HARNESS_DIR} 初始化 harness（Agent：{'、'.join(core.agent_kinds(manifest))}）。")
     print("下一步：填写 .harness/context/intent.md，然后运行 hx snapshot -m \"初始快照\"。")
     return 0
 
@@ -243,7 +243,7 @@ def cmd_auto(args) -> int:
         manifest["auto_save"] = args.state == "on"
         from .util import MANIFEST, write_json
         write_json(core.harness_dir(project) / MANIFEST, manifest)
-    print(f"自动保存：{'开' if manifest.get('auto_save') else '关'}（需要安装 Claude Code 插件才会在会话结束时触发）")
+    print(f"自动保存：{'开' if manifest.get('auto_save') else '关'}（由 Agent 的会话结束钩子触发，目前需要安装 Claude Code 插件）")
     return 0
 
 
@@ -358,7 +358,7 @@ def build_parser() -> argparse.ArgumentParser:
         s.set_defaults(func=fn)
 
     s = sub.add_parser("init", help="在项目里初始化 harness")
-    s.add_argument("--agent", help="Agent 类型（默认自动检测）")
+    s.add_argument("--agent", help="Agent 类型，多个用逗号分隔，如 claude-code,codex（默认自动检测）")
     s.set_defaults(func=cmd_init)
 
     s = sub.add_parser("capture", help="抓取当前的 Agent 配置和上下文（不提交）")

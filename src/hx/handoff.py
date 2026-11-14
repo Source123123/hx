@@ -25,8 +25,10 @@ def builtin_distiller(harness: Path, manifest: dict, lock: dict) -> str:
     agent = lock.get("agent") or {}
     out += ["## 快照", "",
             f"- 快照 ID：`{lock.get('snapshot')}`",
-            f"- Agent：{agent.get('kind')} {agent.get('version') or ''}".rstrip(),
-            f"- 模型：{lock.get('model') or '未知'}",
+            "- Agent：" + ("；".join(
+                f"{k} {v.get('version') or ''}".strip() + (f"（模型 {v['model']}）" if v.get("model") else "")
+                for k, v in sorted((lock.get("agents") or {}).items()))
+                or f"{agent.get('kind')} {agent.get('version') or ''}".strip()),
             f"- 对应代码提交：`{lock.get('code_commit') or '无'}`", ""]
 
     out += ["## 先读这些", "",
@@ -51,7 +53,7 @@ def builtin_distiller(harness: Path, manifest: dict, lock: dict) -> str:
         out += [f"## 最近的会话（共 {len(sessions)} 个，显示最近 {min(limit, len(sessions))} 个）", ""]
     for s in sessions[:limit]:
         out += [f"### {(s.get('ended') or '')[:16].replace('T', ' ')}　分支 {s.get('git_branch') or '-'}　"
-                f"模型 {', '.join(s.get('models') or []) or '-'}", ""]
+                f"{s.get('agent') or ''}　模型 {', '.join(s.get('models') or []) or '-'}", ""]
         prompts = s.get("prompts") or []
         if prompts:
             out.append("用户的要求：")
