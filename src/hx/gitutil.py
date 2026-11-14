@@ -45,3 +45,25 @@ def code_head(project: Path, exclude: str) -> str | None:
         return None
     out = git(project, "log", "-1", "--format=%H", "--", ".", f":(exclude){exclude}", check=False).strip()
     return out or None
+
+
+MIN_VERSION = (2, 22)   # 读取提交里的快照标记需要 git 2.22 的 --format=%(trailers:key=...)
+
+
+def version():
+    """本机 git 的版本，如 (2, 43)。没装返回 None。"""
+    import re
+    try:
+        out = subprocess.run(["git", "--version"], capture_output=True, text=True,
+                             encoding="utf-8", errors="replace").stdout
+    except (FileNotFoundError, OSError):
+        return None
+    m = re.search(r"(\d+)\.(\d+)", out)
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
+def require_version() -> None:
+    v = version()
+    if v is not None and v < MIN_VERSION:
+        raise HxError(f"git 版本太旧（{v[0]}.{v[1]}），hx 需要 {MIN_VERSION[0]}.{MIN_VERSION[1]} 或更新。"
+                      "请升级 git：https://git-scm.com/downloads")

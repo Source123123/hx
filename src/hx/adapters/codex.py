@@ -99,11 +99,12 @@ class CodexAdapter(Adapter):
                     json.dumps({"mcpServers": servers}, ensure_ascii=False, indent=2, sort_keys=True) + "\n", "mcp")
 
         latest = {}
-        limit = int(ctx.options.get("max_sessions", 30))
-        for f in self._session_files(ctx.project, ctx.home)[-limit:]:
+        limit = int(ctx.options.get("max_sessions", 30))   # 0 表示不保存会话摘要
+        for f in self._session_files(ctx.project, ctx.home)[-max(limit, 1):]:
             digest = digest_rollout(f, ctx.project)
             if digest["prompts"] or digest["files_changed"]:
-                ctx.session(digest)
+                if limit > 0:
+                    ctx.session(digest)
                 latest = digest
         ctx.info["agent_version"] = self._cli_version() or latest.get("agent_version")
         model = config.get("model")

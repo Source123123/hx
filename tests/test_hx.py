@@ -499,6 +499,83 @@ class CrossPlatformTest(Env, unittest.TestCase):
         self.assertIn("已保存", r.stdout.decode("utf-8"))
 
 
+class CompatibilityTest(Env, unittest.TestCase):
+    """不同版本的 hx 之间、以及过旧的环境。"""
+
+    def old_format_project(self) -> Path:
+        """按 hx 0.1 / 0.2 的格式（单个 Agent、条目不带 agent 字段）手工搭一个包。"""
+        core.save(self.project)
+        h = self.project / ".harness"
+        manifest = json.loads((h / "harness.json").read_text(encoding="utf-8"))
+        manifest.pop("agents")
+        manifest["agent"] = {"kind": "claude-code"}
+        (h / "harness.json").write_text(json.dumps(manifest), encoding="utf-8")
+        lock = json.loads((h / "harness.lock.json").read_text(encoding="utf-8"))
+        lock["lockVersion"] = 1
+        lock.pop("agents")
+        for e in lock["entries"]:
+            e.pop("agent", None)
+        (h / "harness.lock.json").write_text(json.dumps(lock), encoding="utf-8")
+        sh(self.project, "git", "commit", "-qam", "old format")
+        return self.project
+
+    def test_package_saved_by_older_hx_still_loads(self):
+        project = self.old_format_project()
+        clone = self.root / "work" / "old-clone"
+        sh(self.root, "git", "clone", "-q", str(project), str(clone))
+        sh(clone, "git", "config", "user.email", "t@example.com")
+        sh(clone, "git", "config", "user.name", "t")
+        self.b.use()
+        core.materialize(clone)
+        self.assertEqual((self.b.claude / "skills/deploy/SKILL.md").read_text(encoding="utf-8"), "deploy\n")
+        self.assertNotIn("fail", [c.level for c in core.doctor(clone) if "环境变量" not in c.title])
+        # 再保存一次会自动升级成新格式，原有内容不丢
+        r = core.save(clone)
+        self.assertEqual(r["lock"]["lockVersion"], core.LOCK_VERSION)
+        self.assertIn("claude-code", r["lock"]["agents"])
+        self.assertTrue((clone / ".harness/agent/claude-code/user/skills/deploy/SKILL.md").is_file())
+
+    def test_package_saved_by_newer_hx_is_refused_clearly(self):
+        core.save(self.project)
+        path = self.project / ".harness/harness.lock.json"
+        lock = json.loads(path.read_text(encoding="utf-8"))
+        lock.update(lockVersion=core.LOCK_VERSION + 1, hx="9.9.9")
+        path.write_text(json.dumps(lock), encoding="utf-8")
+        for action in (core.materialize, core.doctor):
+            with self.assertRaises(HxError) as cm:
+                action(self.project)
+            self.assertIn("升级", str(cm.exception))
+        manifest = self.project / ".harness/harness.json"
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+        data["apiVersion"] = "hx/v2"
+        manifest.write_text(json.dumps(data), encoding="utf-8")
+        with self.assertRaises(HxError):
+            core.save(self.project)
+
+    def test_old_git_is_reported(self):
+        from hx import gitutil
+        real = gitutil.version
+        self.assertGreaterEqual(real(), gitutil.MIN_VERSION)
+        gitutil.version = lambda: (2, 17)
+        try:
+            with self.assertRaises(HxError) as cm:
+                core.save(self.project)
+            self.assertIn("git 版本太旧", str(cm.exception))
+        finally:
+            gitutil.version = real
+
+    def test_sessions_can_be_turned_off(self):
+        core.init(self.project)
+        path = self.project / ".harness/harness.json"
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+        manifest["capture"]["max_sessions"] = 0
+        path.write_text(json.dumps(manifest), encoding="utf-8")
+        r = core.capture(self.project)
+        self.assertFalse(list((self.project / ".harness/context").glob("sessions/*.json")))
+        self.assertNotIn("add a login page", self.all_text(self.project / ".harness"))
+        self.assertEqual(r["lock"]["agents"]["claude-code"]["version"], "9.9.9")   # 版本信息仍然能拿到
+
+
 class RedactTest(unittest.TestCase):
     def test_rules(self):
         r = Redactor()

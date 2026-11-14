@@ -422,6 +422,10 @@ def _fix_output_encoding() -> None:
 
 
 def main(argv=None) -> int:
+    if sys.version_info < (3, 9):
+        sys.stderr.write("hx needs Python 3.9 or newer (found %d.%d). / hx 需要 Python 3.9 或更高版本。\n"
+                         % sys.version_info[:2])
+        return 2
     _fix_output_encoding()
     parser = build_parser()
     args = parser.parse_args(argv)

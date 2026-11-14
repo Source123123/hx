@@ -205,14 +205,15 @@ class ClaudeCodeAdapter(Adapter):
 
     def _capture_sessions(self, ctx: CaptureContext, data: Path) -> dict:
         """把最近的会话记录提炼成摘要。返回最新一个会话的摘要。"""
-        limit = int(ctx.options.get("max_sessions", 20))
-        files = sorted(data.glob("*.jsonl"), key=lambda p: p.stat().st_mtime)[-limit:] if data.is_dir() else []
+        limit = int(ctx.options.get("max_sessions", 30))   # 0 表示不保存会话摘要
+        files = sorted(data.glob("*.jsonl"), key=lambda p: p.stat().st_mtime)[-max(limit, 1):] if data.is_dir() else []
         latest = {}
         for f in files:
             digest = digest_session(f, ctx.project)
             if not digest["prompts"] and not digest["files_changed"]:
                 continue
-            ctx.session(digest)
+            if limit > 0:
+                ctx.session(digest)
             latest = digest
         return latest
 

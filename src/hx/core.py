@@ -26,6 +26,9 @@ ENV_FILES = (".devcontainer/devcontainer.json", ".devcontainer.json", "Dockerfil
              ".tool-versions", "mise.toml", ".mise.toml", ".nvmrc", ".python-version",
              ".node-version", "rust-toolchain.toml")
 
+API_VERSION = "hx/v1"     # harness.json 的格式版本
+LOCK_VERSION = 2          # harness.lock.json 的格式版本。1：单个 Agent；2：多个 Agent
+
 INTENT_TEMPLATE = """# 项目意图
 
 > 这个文件由人或 Agent 维护，hx 不会覆盖它。写清楚下面几件事，接手的人就不用从对话记录里猜。
@@ -70,7 +73,11 @@ def harness_dir(project: Path) -> Path:
 def load_manifest(project: Path) -> dict:
     m = read_json(harness_dir(project) / MANIFEST)
     if not isinstance(m, dict):
-        raise HxError(f"{project} 里还没有 harness。先运行 hx init。")
+        raise HxError(f"{project} 里还没有保存过 Agent 环境。先运行 hx save。")
+    api = str(m.get("apiVersion") or API_VERSION)
+    if api != API_VERSION:
+        raise HxError(f"这个项目的 .harness/ 是用不兼容的格式（{api}）保存的，"
+                      f"当前的 hx {__version__} 只认 {API_VERSION}。请升级 hx。")
     return m
 
 
@@ -92,7 +99,19 @@ def entry_agent(entry: dict, kinds: list) -> str | None:
 def load_lock(project: Path) -> dict:
     lock = read_json(harness_dir(project) / LOCK)
     if not isinstance(lock, dict):
-        raise HxError("还没有锁文件。先运行 hx capture 或 hx snapshot。")
+        raise HxError("还没有保存记录。先运行 hx save。")
+    return check_lock_version(lock)
+
+
+def check_lock_version(lock: dict) -> dict:
+    """旧格式的锁文件（版本 1）可以直接读；比当前更新的格式不能硬读，否则可能还原出错的内容。"""
+    try:
+        version = int(lock.get("lockVersion", 1))
+    except (TypeError, ValueError):
+        version = LOCK_VERSION + 1
+    if version > LOCK_VERSION:
+        raise HxError(f"这个快照是用更新的 hx（{lock.get('hx') or '未知版本'}）保存的，"
+                      f"当前的 hx {__version__} 读不了。请升级 hx 后再试。")
     return lock
 
 
@@ -123,7 +142,7 @@ def init(project: Path, agent: str | None = None) -> dict:
     for k in kinds:
         get_adapter(k)  # 名字不对会在这里报错
     manifest = {
-        "apiVersion": "hx/v1",
+        "apiVersion": API_VERSION,
         "name": project.resolve().name,
         "agents": kinds,
         "capture": {"max_sessions": 30, "handoff_sessions": 5},
@@ -204,7 +223,7 @@ def capture(project: Path) -> dict:
     # "当前 Agent"：这台机器上实际抓取到的那个；都没装就沿用上一次的
     active = captured[0] if captured else (previous.get("agent") or {}).get("kind") or kinds[0]
     lock = {
-        "lockVersion": 2,
+        "lockVersion": LOCK_VERSION,
         "hx": __version__,
         "agents": agents,
         "agent": {"kind": active, "version": (agents.get(active) or {}).get("version")},
@@ -241,6 +260,7 @@ def _register_context(ctx: CaptureContext, path: Path) -> None:
 def snapshot(project: Path, message: str, do_capture: bool = True) -> dict:
     if not gitutil.is_repo(project):
         raise HxError("这个目录不是 git 仓库。先运行 git init。")
+    gitutil.require_version()
     result = capture(project) if do_capture else {"lock": load_lock(project)}
     lock = result["lock"]
     code = lock.get("code_commit")
@@ -300,7 +320,7 @@ def lock_at(project: Path, ref: str | None) -> dict:
     text = gitutil.show_file(project, rev, f"{HARNESS_DIR}/{LOCK}")
     if text is None:
         raise HxError(f"找不到快照或版本 {ref!r}（或者那个版本里没有 harness）。")
-    return json.loads(text)
+    return check_lock_version(json.loads(text))
 
 
 def resolve_commit(project: Path, ref: str) -> str:
@@ -436,6 +456,12 @@ def doctor(project: Path) -> list:
         else:
             checks.append(Check("fail", f"环境变量 {name} 未设置", env_hint(name)))
 
+    git_version = gitutil.version()
+    if git_version is None:
+        checks.append(Check("warn", "没有找到 git", "没有 git 也能保存和载入，但没有历史记录。安装：https://git-scm.com/downloads"))
+    elif git_version < gitutil.MIN_VERSION:
+        checks.append(Check("fail", f"git 版本太旧（{'.'.join(map(str, git_version))}）",
+                            f"hx 需要 git {'.'.join(map(str, gitutil.MIN_VERSION))} 或更新。请升级：https://git-scm.com/downloads"))
     if not here:
         checks.append(Check("fail", "这台机器上没有找到受支持的 Agent",
                             f"请安装其中之一：{'、'.join(a.title for a in adapters.values())}"))
@@ -604,6 +630,7 @@ def save(project: Path, message: str | None = None, push: bool = False) -> dict:
     if not is_repo:
         result["reason"] = "no-git"
         return result
+    gitutil.require_version()
     if git_busy(project):
         result["reason"] = "git-busy"
         return result
