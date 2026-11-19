@@ -45,7 +45,9 @@ class MyAgentAdapter(Adapter):
 - `available(home)`：这台机器是否装了这个 Agent，默认看 `user_root` 目录在不在。没装时抓取和还原都跳过。
 - 只有需要合并而不是整文件覆盖的内容（比如 MCP 配置）才需要实现 `materialize`。它必须支持 `dry_run`：预演时不能写文件。
 - 跨 Agent：实现 `export_neutral(project)` 把包里属于你的技能、MCP、指令文件导出成 `Neutral`；实现 `adopt(project, home, neutral, force, dry_run)` 接收别的 Agent 的内容。MCP 的中立写法就是 `.mcp.json` 的写法，密钥为 `${NAME}`。写文件请用 `hx.adapters.base.place_file`，它统一处理冲突、备份和预演。
-- 完整的参考实现：`src/hx/adapters/codex.py`（会话不按项目分目录、配置是 TOML）和 `src/hx/adapters/claude_code.py`。
+- 完整的参考实现：`src/hx/adapters/deepseek_harness.py`（配置是 YAML、会话是 zstd 压缩）、
+  `src/hx/adapters/codex.py`（会话不按项目分目录、配置是 TOML）和
+  `src/hx/adapters/claude_code.py`。
 
 在你的包的 `pyproject.toml` 里注册：
 

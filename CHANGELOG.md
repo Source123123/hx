@@ -2,6 +2,28 @@
 
 本项目的所有重要变更记录于此。格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.7.0] - 2026-11-19
+
+### 新增
+
+- DeepSeek Harness adapter：保存/还原用户与项目指令、`.dsh/skills`、`.agents/skills`、
+  profile 的 `cordis.patch.yml`、MCP、插件清单、凭据名字和会话摘要。
+- DSH 默认 zstd 会话的解压：Python 3.14 `compression.zstd`、`zstandard` 模块或
+  `node:zlib`；都没有时跳过摘要并说明原因。
+- DSH profile patch 的 MCP 窄化读写：只添加缺失服务器，保留注释和其他行。
+- 跨 Agent：DSH 与其他 Agent 的技能、MCP、指令入口可以互相导出/接收。
+- `docs/DSH.md` 与 `docs/CODEX_HANDOFF.md`。
+
+### 修复
+
+- 脱敏规则把 `${credential:NAME}` 里的 `credential:NAME` 误判为“名字像密钥的赋值”。
+
+### 验证
+
+- 新增 8 个 DSH 测试；本机真实 `~/.dsh` 的 profile patch 和真实会话摘要验证通过。
+- 用假 `HX_HOME` 验证了 `materialize` 和 `.hxb` 载入。
+- DSH 插件、自动保存、团队接入和真实双机迁移仍未实现。
+
 ## [0.6.1] - 2026-11-14
 
 ### 修复

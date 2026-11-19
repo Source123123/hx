@@ -105,6 +105,9 @@ CLI 的 plugin list 默认不枚举项目市场，首次接入可在项目目录
 关闭接入会禁用该项目插件并移除目录中的 hx 条目，保留其他设置。已有不同来源的 hx 不会被覆盖。
 被修改的文件此前没有未提交改动时，hx 会将其单独提交。
 
+DeepSeek Harness 目前没有对应的插件安装入口，`hx team on` 对它不生效；DSH 项目请直接
+运行 `hx save` / `hx load`。
+
 ## 可搬运性与隐私
 
 ### hx audit
@@ -251,10 +254,14 @@ hx import <包文件> [--force] [--restore-transcripts]
 
 | 变量 | 作用 |
 |---|---|
-| `HX_HOME` | 把指定目录当作用户主目录。用于测试或模拟另一台机器。设置后，hx 忽略 `CLAUDE_CONFIG_DIR` 和 `CODEX_HOME`，也不探测本机 Agent 的版本 |
+| `HX_HOME` | 把指定目录当作用户主目录。用于测试或模拟另一台机器。设置后，hx 忽略 `CLAUDE_CONFIG_DIR`、`CODEX_HOME`、`DSH_HOME`、`DSH_AGENTS_HOME` 和 `DSH_PROFILE`，也不探测本机 Agent 的版本 |
 | `HX_PLUGIN_REPO` | `hx team on` 声明的插件仓库，默认 `Source123123/hx`。使用自己的分支时设置 |
 | `CLAUDE_CONFIG_DIR` | Claude Code 的配置目录，默认 `~/.claude` |
 | `CODEX_HOME` | Codex 的配置目录，默认 `~/.codex` |
+| `DSH_HOME` | DeepSeek Harness 的数据目录，默认 `~/.dsh`；设置后 DSH adapter 从这里读写 profile、技能和会话 |
+| `DSH_AGENTS_HOME` | DSH 与其他 Agent 共享的技能/指令目录，默认 `~/.agents` |
+| `DSH_PROFILE` | 要抓取、还原的 DSH profile 名；默认依次尝试 `default`、`desktop`、`web` |
+| `HX_NODE` | 可选的 node 可执行文件路径，用于解压 DSH 的 zstd 会话 |
 | `CLAUDE_PROJECT_DIR` | 由 Claude Code 在钩子中提供，hx 的自动保存据此定位项目 |
 
 ## Claude Code 插件提供的入口

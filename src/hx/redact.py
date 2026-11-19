@@ -66,6 +66,11 @@ class Redactor:
 
         def assign(m: re.Match) -> str:
             val = m.group("val")
+            # ${credential:NAME} 是 DSH 等 Agent 的凭据引用，不是赋值。
+            # 只跳过真正位于 ${...} 里的 credential，避免漏掉 YAML 里的 credential: 值。
+            prefix = m.string[max(0, m.start() - 2):m.start()]
+            if prefix == "${" and m.string[m.end():m.end() + 1] == "}":
+                return m.group(0)
             # 已经是占位符或环境变量引用的不算
             if val.startswith(("[REDACTED", "${", "$")) or val.lower() in ("true", "false", "null", "none"):
                 return m.group(0)

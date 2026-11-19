@@ -22,6 +22,7 @@
 
 - [x] M12（v0.6）Codex 真实格式核对、项目 MCP、覆盖指令、技能、插件体检与一键入口
 - [x] M13（v0.6.1）真实 Codex 迁移和 GitHub 插件安装验证、新机器团队目录修复
+- [x] M14（v0.7.0）DeepSeek Harness adapter：指令、技能、profile patch、MCP、插件清单、凭据名字、zstd 会话摘要、跨 Agent
 
 ## 已验证
 - 本轮接手完成真实 Codex 格式核对、当前配置核对、插件入口与钩子、真实迁移验证，详细证据见下方第 1–4 节。主机为 Windows 10 专业版 19045、Python 3.12、codex-cli 0.167.0-alpha.4.1。
@@ -62,6 +63,39 @@
 ## 备注
 - 远端：https://github.com/Source123123/hx（main 分支）。每完成一步就 commit 并 push。
 - 模拟另一台机器：设置环境变量 HX_HOME 指向一个目录，hx 会把它当作主目录（此时忽略 CLAUDE_CONFIG_DIR / CODEX_HOME，也不探测本机的 claude / codex 版本）。
+
+## 本轮接手（2026-11-19）
+
+### 1. DSH 接入
+- 新增 `src/hx/adapters/deepseek_harness.py`、注册表和 entry point；支持项目/用户/共享
+  指令与技能、profile 与主目录 patch、`mcp-manager` 的 MCP、插件清单、凭据名字、`.env`
+  参考副本和会话摘要。
+- DSH 的会话是 `session.v4.jsonl.zstd`（多个 zstd frame 串联）。按 Python 3.14
+  `compression.zstd` → `zstandard` → `node:zlib` 的顺序解压；都没有时跳过摘要并记录。
+- DSH 的 `${credential:NAME}` 不能当普通赋值脱敏，已修 `redact.py`；MCP 载入时转回
+  `${credential:NAME}`，只添加缺失服务器。
+- profile patch 的 YAML 采用窄化读写：只认 `mcp-manager`/`mcp` 的 servers 和
+  `agent-default-model` 的 model/provider，写回只插入局部行，保留注释。
+
+### 2. 验证
+- 本机真实 `~/.dsh`（Windows 10、DSH 0.2.2-rc.3、Python 3.12、Node 24.21）：
+  `hx init --agent deepseek-harness`、`hx capture`、`hx doctor`、`hx save` 通过。
+  真实 profile patch 被保存并按 `{{hx:home}}` 脱敏；真实会话摘要提取出用户消息、
+  改动文件和工具次数；模型为 `deepseek-flash`。
+- 假 `HX_HOME` 的 `materialize` 与 `.hxb` `load` 通过：profile patch、用户/共享技能、
+  用户/共享 AGENTS 写到了预期位置；缺少凭据 `DEEPSEEK_API_KEY` 被报告。
+- 新增 8 个 DSH 测试全过（有 node 时包括 zstd 往返）；`tests/test_dsh.py` 覆盖抓取、
+  脱敏、摘要、还原、MCP 合并/冲突、中立格式、zstd。
+
+### 3. 未验证 / 下一步
+- 没有 DSH 原生插件：`$hx:save` / `$hx:load`、会话结束自动保存、会话开始提示、
+  `hx team on` 都未实现；用户目前手动运行 `hx save` / `hx load`。
+- 没有启动真实 DSH 读取还原后的 profile；没有真实双机迁移。
+- 本机 DSH sandbox 使现有 46 个测试因 `tempfile`/`git clone` 权限报错，未能跑全量；
+  DSH 专项 8 个测试通过。需要在普通终端或 CI 上重跑全量。
+- `--include-transcripts` 不导出 DSH 的 zstd 原始会话；YAML 窄化解析不支持锚点/别名/
+  多行折叠；凭据名与环境变量的语义仍可能产生体检提醒。
+- 详细交接见 [docs/DSH.md](docs/DSH.md) 和 [docs/CODEX_HANDOFF.md](docs/CODEX_HANDOFF.md)。
 
 ## 本轮接手（2026-11-14）
 

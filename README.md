@@ -30,7 +30,7 @@
 | 保存 | 一条命令抓取 Agent 的配置和上下文，提交为一个快照 |
 | 载入 | 在新机器上还原配置，并检查缺少的环境变量、工具和插件 |
 | 历史 | 快照就是 git 提交，可以查看、比较、回退；代码提交可以标记它产生时所用的快照 |
-| 多 Agent | 同一个项目可以同时登记 Claude Code 和 Codex，各自保存互不覆盖 |
+| 多 Agent | 同一个项目可以同时登记 Claude Code、Codex 和 DeepSeek Harness，各自保存互不覆盖 |
 | 跨 Agent | 用一种 Agent 保存的项目，可以在只装了另一种 Agent 的机器上载入 |
 | 团队交接 | 会话摘要全团队累积，自动生成交接简报 |
 | 密钥保护 | 密钥不进包，只登记环境变量名；文本经过脱敏规则 |
@@ -58,8 +58,9 @@
 |---|---|---|
 | Claude Code | 支持 | 支持 |
 | OpenAI Codex CLI | 支持（用户及项目级 MCP、技能、覆盖指令、插件体检） | 插件、技能、开始/结束钩子、项目声明；需支持 plugin/hooks 的版本并审阅钩子 |
+| DeepSeek Harness | 支持（用户/项目指令、技能、profile patch、MCP、插件清单、会话摘要） | 暂未提供 DSH 插件；团队接入和会话结束自动保存待补 |
 
-hx 识别的是 Agent 程序，而不是它背后的模型。在 Claude Code 或 Codex 中改用其他厂商的模型（例如 DeepSeek），hx 的行为不变。
+hx 识别的是 Agent 程序，而不是它背后的模型。在 Claude Code、Codex 或 DeepSeek Harness 中改用其他厂商的模型，hx 的行为不变。
 
 各项的验证程度和尚未验证的部分见 [PROGRESS.md](PROGRESS.md)。
 
@@ -143,6 +144,25 @@ pip install git+https://github.com/Source123123/hx
 `~/.hx/logs/auto-save-*.log`。切换聊天不等于结束聊天。会话开始只提示阅读交接和载入，不写入配置。
 本机 `codex exec` 没有发出开始事件，自动化任务不要依赖它的开始提示，必要时显式执行 `hx auto-load`。
 团队接入采用 Codex 的原生配置机制，不承诺弹出与 Claude Code 相同的安装窗口。
+
+### 使用 DeepSeek Harness
+
+DSH 目前通过命令行接入，不需要额外插件：
+
+| 目的 | 操作 |
+|---|---|
+| 首次保存 | 在项目目录运行 `hx save` |
+| 换机器接手 | clone 项目后运行 `hx load` |
+| 体检 | 运行 `hx doctor` |
+
+hx 会保存和还原 DSH 的 `AGENTS.md`、`CLAUDE.md`、`.dsh/skills`、`.agents/skills`、
+`$DSH_HOME/AGENTS.md`、`$DSH_HOME/skills`、`~/.agents/AGENTS.md`、`~/.agents/skills`，
+以及 profile 的 `cordis.patch.yml`（含模型和 MCP 配置）。凭据值不会进包，只登记名字。
+
+DSH 默认用 zstd 压缩会话。Python 3.14 自带 `compression.zstd`；3.9–3.13 需要
+`zstandard` 模块，或把 `node` 放进 PATH（DSH 自带的 Node 运行时也会被自动发现）。
+都没有时只跳过会话摘要，配置仍可正常保存和载入。DSH 的自动保存、会话开始提示和团队
+一键接入需要原生插件，当前尚未实现；需要时运行 `hx save` / `hx load`。
 
 ### 使用命令行
 
@@ -260,6 +280,9 @@ hx resource add docs-index --path .rag/index --sources "docs/**/*.md" --build "p
 - Codex 的通用设置（`config.toml` 中 MCP 以外的部分）仅保存作参考，不自动还原。
 - ChatGPT 网页版或 App 中的对话不在本机，无法打包。
 - 同一种 Agent 的个人配置以最后保存的人为准。建议先载入再工作。
+- DSH 的会话默认是 zstd 压缩的；没有 Python 3.14、`zstandard` 或 `node` 时只能保存配置，不能提炼会话摘要。
+- DSH 的 profile patch 会整份还原；不同 DSH 版本、不同 profile 名称或不同的本机模型设置需要人工确认。
+- DSH 的 `.credentials.yaml` 只记录凭据名字，不复制值；`cordis.patch.yml` 里的凭据引用在目标机器上要能解析。
 
 ## 文档
 
@@ -270,6 +293,8 @@ hx resource add docs-index --path .rag/index --sources "docs/**/*.md" --build "p
 | [docs/DESIGN.md](docs/DESIGN.md) | 设计说明：分层模型、多 Agent、跨系统、取舍 |
 | [docs/EXTENDING.md](docs/EXTENDING.md) | 扩展指南：接入新的 Agent、脱敏规则、提炼器 |
 | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | 常见问题与排查 |
+| [docs/DSH.md](docs/DSH.md) | DeepSeek Harness 适配：抓取范围、zstd 会话、限制 |
+| [docs/CODEX_HANDOFF.md](docs/CODEX_HANDOFF.md) | 给 Codex 的 DSH 后续开发提示词 |
 | [SECURITY.md](SECURITY.md) | 安全模型与漏洞报告 |
 | [CHANGELOG.md](CHANGELOG.md) | 版本变更记录 |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | 开发环境、测试、提交规范 |

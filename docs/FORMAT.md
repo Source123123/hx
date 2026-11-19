@@ -18,11 +18,19 @@
 │   │   ├── local/              项目内未纳入版本管理的本地文件：CLAUDE.local.md、settings.local.json
 │   │   ├── mcp.json            MCP 服务器（中立写法，见第 5 节）
 │   │   └── plugins.json        已安装插件清单
-│   └── codex/
-│       ├── user/               来自 ~/.codex：AGENTS.md、AGENTS.override.md、skills/、prompts/、config.reference.toml
+│   ├── codex/
+│   │   ├── user/               来自 ~/.codex：AGENTS.md、AGENTS.override.md、skills/、prompts/、config.reference.toml
+│   │   ├── shared-skills/      来自 ~/.agents/skills，载入时放回该目录
+│   │   ├── plugins.json        codex plugin list --json 的已安装清单，仅用于体检
+│   │   └── mcp.json            用户级和项目级 MCP 服务器（中立写法）
+│   └── deepseek-harness/
+│       ├── user/               来自 $DSH_HOME：AGENTS.md、skills/、env.reference
+│       ├── profile/<名称>/     profile 的 cordis.patch.yml
+│       ├── shared/             来自 ~/.agents：AGENTS.md
 │       ├── shared-skills/      来自 ~/.agents/skills，载入时放回该目录
-│       ├── plugins.json        codex plugin list --json 的已安装清单，仅用于体检
-│       └── mcp.json            用户级和项目级 MCP 服务器（中立写法）
+│       ├── credentials.json    凭据名字（不含值），仅用于体检
+│       ├── plugins.json        profile 的 bundles、npm 依赖和已安装版本
+│       └── mcp.json            MCP 服务器（中立写法，见第 5 节）
 └── context/
     ├── intent.md               项目目标和设计思路。人工维护
     ├── tasks.md                进行中和待办。人工维护
@@ -199,6 +207,19 @@ HTTP 字面请求头一律改为 `${MCP_<服务器>_<请求头>}`（非字母数
 `pluginId`、`name`、`marketplaceName`、`version`、`enabled`、`source`、`marketplaceSource`。
 来源会经过脱敏和路径占位符处理；清单没有还原目标，不会自动安装或启用插件。
 这些均为可选内容，锁文件格式仍为 3，旧清单和旧锁文件仍可读取。
+
+### 5.1 DeepSeek Harness 的 MCP 写法
+
+DSH 把 MCP 服务器放在 `mcp-manager` 行的 `config.servers` 中，密钥写成
+`${credential:NAME}`。hx 保存时转成第 5 节的中立写法：`transport: stdio`
+对应 `command`/`args`/`env`，`transport: streamable-http` 对应 `type: http`/`url`/`headers`；
+`${credential:NAME}` 和 `Bearer ${credential:NAME}` 分别变成 `${NAME}` 和
+`Bearer ${NAME}`，名字登记进清单。载入时再变回 `${credential:NAME}`，只添加
+DSH 配置里没有的同名服务器，同名但不同的服务器不覆盖。
+
+DSH 的会话默认是 `$DSH_HOME/sessions/<项目目录>/<会话>/session.v4.jsonl.zstd`。
+adapter 用 Python 3.14 的 `compression.zstd`、`zstandard` 模块或 `node:zlib`
+解压后提炼摘要；没有可用的解码器时只在锁文件的跳过信息里说明，不影响配置。
 
 ## 6. 提交标记
 

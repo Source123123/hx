@@ -194,3 +194,48 @@ hx 0.4 起比较内容时忽略换行差异，不应出现该现象。如果仍�
 - 结束后看不到新提交：后台保存稍等几秒，再检查 ~/.hx/logs/auto-save-*.log。项目须先保存过且 hx auto 为开；强制终止不保证触发。
 - 项目 MCP 没有出现在 `codex mcp list`：在项目根目录运行，并确认 Codex 已信任项目；用户级和项目级配置分开还原。
 - 插件清单缺失：`codex plugin list --json` 必须可用。hx 只记录名字、来源和版本，不自动安装插件，也不复制账号认证。
+
+## DeepSeek Harness
+
+### 提示"DSH 会话是 zstd 压缩的，本机没有可用的解码器"
+
+DSH 默认用 zstd 压缩会话。任选一种：
+
+- 用 Python 3.14 运行 hx；
+- 安装 `zstandard`（`pip install zstandard`）；
+- 把 `node` 放进 PATH，或设置 `HX_NODE` 指向 node 可执行文件（DSH 自带的 Node 运行时也会被自动发现）。
+
+没有解码器时只跳过会话摘要，配置、技能和 MCP 仍然可以保存和载入。
+
+### 提示 DSH 版本未知
+
+DSH 桌面版的版本在 `app.asar` 的 `dsh/desktop-runtime.json` 中。hx 会从
+`DSH_INSTALL_DIR` 解析；如果自定义安装路径或只装了命令行版，可能读不到版本。
+这不影响保存和载入，只是体检少一项版本对比。
+
+### `hx load` 提示 profile 的 `cordis.patch.yml` 已有不同内容
+
+本机 profile 已经有一份配置。hx 默认保留本机版本：
+
+- 想保留本机：无需操作；
+- 想用快照里的：先备份，再运行 `hx load --force`，原文件会变成 `.hx-bak`；
+- 想只合并 MCP：不要 `--force`，hx 仍会把快照里缺少的 MCP 服务器加进本机 profile。
+
+### 提示"凭据 … 未找到"
+
+DSH 的 `${credential:NAME}` 由 DSH 凭据提供者解析，hx 不复制 `.credentials.yaml` 的值。
+在 DSH 里登录/配置该凭据，或设置同名环境变量；不要向 hx 索要或粘贴凭据原文。
+
+### DSH 项目没有被自动识别
+
+`hx init` 只有在项目里有 `.dsh/`、`.agents/skills/`，或 `$DSH_HOME/sessions` 下有这个项目的
+会话时才自动识别 DSH。也可以在初始化时显式指定：
+
+```bash
+hx init --agent deepseek-harness
+```
+
+### DSH 没有自动保存 / 团队一键接入
+
+这两项需要 DSH 原生插件，当前版本还没有。请手动运行 `hx save` / `hx load`；
+后续计划见 [DSH.md](DSH.md) 和 [CODEX_HANDOFF.md](CODEX_HANDOFF.md)。

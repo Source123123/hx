@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hx-harness"
-version = "0.6.1"
+version = "0.7.0"
 description = "把 Agent 开发环境（配置 + 上下文）打包、版本化、迁移的工具"
 requires-python = ">=3.9"
 dependencies = []
 readme = "README.md"
 license = { text = "MIT" }
-keywords = ["agent", "claude-code", "codex", "harness", "reproducibility"]
+keywords = ["agent", "claude-code", "codex", "deepseek-harness", "harness", "reproducibility"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: Console",
@@ -40,6 +40,7 @@ hx = "hx.cli:main"
 [project.entry-points."hx.adapters"]
 claude-code = "hx.adapters.claude_code:ClaudeCodeAdapter"
 codex = "hx.adapters.codex:CodexAdapter"
+deepseek-harness = "hx.adapters.deepseek_harness:DeepSeekHarnessAdapter"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -8,7 +8,9 @@ from .base import Adapter
 def _builtin() -> dict[str, type]:
     from .claude_code import ClaudeCodeAdapter
     from .codex import CodexAdapter
-    return {ClaudeCodeAdapter.name: ClaudeCodeAdapter, CodexAdapter.name: CodexAdapter}
+    from .deepseek_harness import DeepSeekHarnessAdapter
+    return {ClaudeCodeAdapter.name: ClaudeCodeAdapter, CodexAdapter.name: CodexAdapter,
+            DeepSeekHarnessAdapter.name: DeepSeekHarnessAdapter}
 
 
 def all_adapters() -> dict[str, type]:
