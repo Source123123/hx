@@ -16,7 +16,7 @@
 
 分支：`feat/deepseek-harness-adapter`
 基线：`main@e54e93f`
-本次提交：本分支最新提交（`git log -1`）
+DSH 适配提交：`68f5710`（本分支第一个提交）
 
 ## 已经完成的内容
 
