@@ -509,6 +509,8 @@ def dsh_to_neutral(spec: dict, ctx: CaptureContext, name: str) -> dict:
             out["env"] = env
     if spec.get("enabled") is False:
         out["x-hx-enabled"] = False
+    if isinstance(spec.get("cwd"), str):
+        out["cwd"] = ctx.redactor.text(spec["cwd"])
     return out
 
 
